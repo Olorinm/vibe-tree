@@ -92,10 +92,10 @@ See [CHANGELOG.md](CHANGELOG.md).
 <summary><strong>📖 Token Rules</strong></summary>
 
 ```
-Counted tokens = inputTokens + outputTokens
+Counted tokens = inputTokens + outputTokens, plus cacheWriteTokens for Anthropic sources where cache creation is reported separately.
 ```
 
-`cacheReadTokens` / `cacheWriteTokens` are stored for source details but are not counted toward total tokens.
+Some providers include cached input in `inputTokens`; Anthropic reports cache reads/writes separately. Vibe Tree counts Claude Code cache writes as newly-created input, while cache reads are shown as reused context and are not counted toward growth totals.
 
 By default, tracking starts from install day. Pre-install history is not imported.
 

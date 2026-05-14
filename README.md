@@ -92,10 +92,10 @@ electron_mirror=https://npmmirror.com/mirrors/electron/
 <summary><strong>📖 Token 规则</strong></summary>
 
 ```
-计入 Token = inputTokens + outputTokens
+计入 Token = inputTokens + outputTokens；对 Anthropic 来源，还会加上单独上报的 cacheWriteTokens。
 ```
 
-`cacheReadTokens` / `cacheWriteTokens` 记录来源明细，暂不计入累计 Token。
+部分 provider 会把缓存输入包含在 `inputTokens` 里；Anthropic 会单独上报 cache read/write。Vibe Tree 会把 Claude Code 的 cache write 视为本次新创建的输入并计入累计 Token，cache read 则作为复用上下文展示，不计入成长总量。
 
 默认从安装当天开始统计，安装日前的历史不会计入。
 

@@ -13,6 +13,7 @@ import type {
   UsageStatus,
   WindowBounds,
 } from "../shared/types";
+import { countedTokensForEntry } from "../shared/tokenAccounting";
 import { ACHIEVEMENTS, CATEGORY_ORDER, rarityOrder } from "./achievements";
 import type { AchievementContext, AchievementDef } from "./achievements";
 import {
@@ -246,7 +247,7 @@ if (viewMode === "pet") {
             <p class="eyebrow" data-i18n="liveGrowth">Live growth</p>
             <div class="level-title-row">
               <h2 id="levelTitle">Lv.1 新芽</h2>
-              <span class="help-tip" tabindex="0" aria-label="计入 Token = input + output" data-tooltip="计入 Token = input + output" data-i18n-tooltip="tokenHelp">?</span>
+              <span class="help-tip" tabindex="0" aria-label="计入 Token = input + output；Claude 会加上 cache write" data-tooltip="计入 Token = input + output；Claude 会加上 cache write" data-i18n-tooltip="tokenHelp">?</span>
             </div>
           </div>
           <div class="weather-readout">
@@ -2662,16 +2663,7 @@ function scaledHistoryHeight(value: number, max: number) {
 }
 
 function xpForEntry(entry: LedgerEntry) {
-  if (
-    entry.inputTokens === undefined &&
-    entry.outputTokens === undefined &&
-    entry.cacheReadTokens === undefined &&
-    entry.cacheWriteTokens === undefined
-  ) {
-    return safeTokens(entry.tokens);
-  }
-
-  return safeTokens(entry.inputTokens ?? 0) + safeTokens(entry.outputTokens ?? 0);
+  return countedTokensForEntry(entry);
 }
 
 function safeTokens(value: number) {

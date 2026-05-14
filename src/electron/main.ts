@@ -24,6 +24,7 @@ import { MAIN_TEXT, WEATHER_LABELS } from "./i18n.js";
 import type { WeatherId } from "./i18n.js";
 import { createLeaderboardService } from "./leaderboard.js";
 import type { LeaderboardRequestJsonOptions } from "./leaderboard.js";
+import { countedTokensForEntry } from "../shared/tokenAccounting.js";
 
 const PET_BASE = { width: 192, height: 208 };
 const PET_STAGE_OFFSET = { x: 28, y: 0 };
@@ -1090,15 +1091,7 @@ function sourceStatusLabel(label: string, status: UsageStatus["codexSession"], s
 }
 
 function xpForEntry(entry: LedgerEntry) {
-  if (
-    entry.inputTokens === undefined &&
-    entry.outputTokens === undefined &&
-    entry.cacheReadTokens === undefined &&
-    entry.cacheWriteTokens === undefined
-  ) {
-    return safeTokens(entry.tokens);
-  }
-  return safeTokens(entry.inputTokens ?? 0) + safeTokens(entry.outputTokens ?? 0);
+  return countedTokensForEntry(entry);
 }
 
 function safeTokens(value: number) {
