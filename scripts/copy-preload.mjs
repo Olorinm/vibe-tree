@@ -7,18 +7,26 @@ const rootPkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "ut
 
 mkdirSync(dirname(to), { recursive: true });
 copyFileSync(from, to);
-writeFileSync(
-  join(process.cwd(), "dist/electron/package.json"),
-  JSON.stringify(
-    {
-      name: rootPkg.name,
-      productName: rootPkg.productName,
-      version: rootPkg.version,
-      main: "main.js",
-      type: "commonjs",
-    },
-    null,
-    2,
-  ),
-  "utf8",
-);
+
+writeCommonJsPackage("dist/electron", { main: "main.js" });
+writeCommonJsPackage("dist/shared");
+
+function writeCommonJsPackage(directory, extra = {}) {
+  const target = join(process.cwd(), directory);
+  mkdirSync(target, { recursive: true });
+  writeFileSync(
+    join(target, "package.json"),
+    JSON.stringify(
+      {
+        name: rootPkg.name,
+        productName: rootPkg.productName,
+        version: rootPkg.version,
+        type: "commonjs",
+        ...extra,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
