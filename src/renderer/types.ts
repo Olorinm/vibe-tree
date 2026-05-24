@@ -3,7 +3,7 @@ import type { AchievementCategory } from "./i18n";
 
 export type WeatherId = "clear" | "breeze" | "drizzle" | "rain" | "thunder" | "storm";
 export type ViewMode = "pet" | "manager" | "toast";
-export type HistorySourceId = "codex" | "openclaw" | "opencode" | "claude" | "gemini" | "hermes";
+export type HistorySourceId = "codex" | "openclaw" | "pi" | "opencode" | "claude" | "gemini" | "hermes";
 export type HistoryFilter = "all" | HistorySourceId;
 export type SourceScope = "today" | "total";
 export type BadgeMetric = "level" | "total" | "rate";

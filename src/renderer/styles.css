@@ -2677,6 +2677,10 @@ label {
   background: #8ab4f8;
 }
 
+.history-tooltip-dot.pi {
+  background: #ff6b6b;
+}
+
 .history-tooltip-dot.hermes {
   background: #fbbc04;
 }
@@ -2704,6 +2708,11 @@ label {
 .legend-gemini,
 .history-segment.gemini {
   background: #8ab4f8;
+}
+
+.legend-pi,
+.history-segment.pi {
+  background: #ff6b6b;
 }
 
 .legend-hermes,

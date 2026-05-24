@@ -378,6 +378,13 @@ export function appShellHtml(viewMode: ViewMode) {
               </div>
               <div class="agent-source-row">
                 <label class="agent-source-toggle">
+                  <input type="checkbox" data-stats-source="pi" />
+                  <span data-i18n="piPath">Pi Agent 路径</span>
+                </label>
+                <input id="piSessionsDirInput" type="text" placeholder="~/.pi/agent/sessions" aria-label="Pi Agent path" />
+              </div>
+              <div class="agent-source-row">
+                <label class="agent-source-toggle">
                   <input type="checkbox" data-stats-source="opencode" />
                   <span data-i18n="opencodePath">OpenCode 路径</span>
                 </label>

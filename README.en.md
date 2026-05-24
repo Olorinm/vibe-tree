@@ -32,7 +32,7 @@ Opt into the leaderboard with GitHub. By default, only aggregated token ranking 
 
 - **Desktop pixel tree**: always-on-top, draggable, scalable, lockable, and quiet on startup.
 - **Live token weather**: total tokens drive level growth; current token/min drives weather.
-- **Multi-agent sources**: Codex, Claude Code, OpenClaw, OpenCode, Gemini, and Hermes.
+- **Multi-agent sources**: Codex, Claude Code, OpenClaw, Pi Agent, OpenCode, Gemini, and Hermes.
 - **Source and model breakdowns**: inspect input, output, cache, and model distribution by agent.
 - **Recent 7-day chart**: filter token trends by source.
 - **Achievements**: unlock milestones for totals, peaks, streaks, time habits, and agent usage.
@@ -82,6 +82,7 @@ electron_mirror=https://npmmirror.com/mirrors/electron/
 | Codex | ✅ | `~/.codex/sessions/**/*.jsonl` |
 | Claude Code | ✅ | `~/.claude/projects/**/*.jsonl` |
 | OpenClaw | ✅ | `~/.openclaw/agents/**/sessions/*.jsonl` |
+| Pi Agent | ✅ | `~/.pi/agent/sessions/**/*.jsonl` |
 | OpenCode | ✅ | `~/.local/share/opencode/opencode.db` (legacy `storage/message/**/*.json` remains supported) |
 | Gemini | ✅ | local Gemini session directory |
 | Hermes | ✅ | local Hermes session directory |

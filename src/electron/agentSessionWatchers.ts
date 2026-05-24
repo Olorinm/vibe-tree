@@ -41,8 +41,8 @@ interface UsageSnapshot {
 }
 
 interface AgentConfig {
-  source: "claude-session" | "openclaw-session";
-  agent: "claude-code" | "openclaw";
+  source: "claude-session" | "openclaw-session" | "pi-session";
+  agent: "claude-code" | "openclaw" | "pi-agent";
   sessionsRoot: string;
   importHistoryEnv: string;
   stateFileName: string;
@@ -99,6 +99,7 @@ interface OpenCodeMessageRow {
 const READ_CHUNK_SIZE = 64 * 1024;
 const DEFAULT_CLAUDE_ROOT = join(homedir(), ".claude", "projects");
 const DEFAULT_OPENCLAW_ROOT = join(homedir(), ".openclaw", "agents");
+const DEFAULT_PI_ROOT = defaultPiSessionsRoot();
 const DEFAULT_OPENCODE_DB = defaultOpenCodeDbPath();
 const DEFAULT_OPENCODE_MESSAGES_ROOT = defaultOpenCodeMessagesRoot();
 const DEFAULT_GEMINI_ROOT = join(homedir(), ".gemini", "tmp");
@@ -125,6 +126,19 @@ export function startOpenClawSessionWatcher(options: SessionWatcherOptions) {
     stateFileName: "openclaw-session-watcher.json",
     pollIntervalMs: 10_000,
     parseLine: parseOpenClawLine,
+  });
+}
+
+export function startPiSessionWatcher(options: SessionWatcherOptions) {
+  return startAgentSessionWatcher(options, {
+    source: "pi-session",
+    agent: "pi-agent",
+    sessionsRoot:
+      options.sessionsRoot || process.env.VIBE_PI_AGENT_SESSIONS_DIR || process.env.VIBE_PI_SESSIONS_DIR || DEFAULT_PI_ROOT,
+    importHistoryEnv: "VIBE_PI_IMPORT_HISTORY",
+    stateFileName: "pi-session-watcher.json",
+    pollIntervalMs: 10_000,
+    parseLine: parsePiLine,
   });
 }
 
@@ -776,6 +790,37 @@ function parseOpenClawLine(line: string, filePath: string, lineOffset: number): 
   };
 }
 
+function parsePiLine(line: string, filePath: string, lineOffset: number): UsageEvent | undefined {
+  const parsed = parseJson(line);
+  if (!parsed || parsed.type !== "message") return undefined;
+
+  const message = asRecord(parsed.message);
+  if (!message || message.role !== "assistant") return undefined;
+
+  const usage = asRecord(message.usage);
+  const tokens = parseOpenClawUsage(usage);
+  if (!tokens) return undefined;
+
+  const messageId = stringValue(parsed.id) || hash(`${filePath}:${lineOffset}`);
+  const provider = stringValue(message.provider) || "pi-agent";
+  const model = stringValue(message.model);
+
+  return {
+    id: `pi-session:${hash(`${filePath}:${messageId}`)}`,
+    createdAt: stringValue(parsed.timestamp) || new Date().toISOString(),
+    source: "pi-session",
+    agent: "pi-agent",
+    provider,
+    model,
+    inputTokens: tokens.inputTokens,
+    outputTokens: tokens.outputTokens,
+    cacheReadTokens: tokens.cacheReadTokens,
+    cacheWriteTokens: tokens.cacheWriteTokens,
+    totalTokens: tokens.inputTokens + tokens.outputTokens,
+    streaming: false,
+  };
+}
+
 function parseOpenCodeFile(filePath: string): UsageEvent | undefined {
   const parsed = readJsonFile(filePath);
   if (!parsed || parsed.role !== "assistant") return undefined;
@@ -1221,4 +1266,12 @@ function defaultOpenCodeMessagesRoot() {
     return join(process.env.LOCALAPPDATA, "opencode", "storage", "message");
   }
   return join(homedir(), ".local", "share", "opencode", "storage", "message");
+}
+
+function defaultPiSessionsRoot() {
+  const piAgentDir = process.env.PI_AGENT_DIR?.trim();
+  if (piAgentDir) return piAgentDir;
+  const piCodingAgentDir = process.env.PI_CODING_AGENT_DIR?.trim();
+  if (piCodingAgentDir) return join(piCodingAgentDir, "sessions");
+  return join(homedir(), ".pi", "agent", "sessions");
 }

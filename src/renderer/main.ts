@@ -309,6 +309,7 @@ const totalDisplayUnitSelect = document.querySelector<HTMLSelectElement>("#total
 const codexSessionsDirInput = document.querySelector<HTMLInputElement>("#codexSessionsDirInput");
 const claudeSessionsDirInput = document.querySelector<HTMLInputElement>("#claudeSessionsDirInput");
 const openclawSessionsDirInput = document.querySelector<HTMLInputElement>("#openclawSessionsDirInput");
+const piSessionsDirInput = document.querySelector<HTMLInputElement>("#piSessionsDirInput");
 const opencodeSessionsDirInput = document.querySelector<HTMLInputElement>("#opencodeSessionsDirInput");
 const geminiSessionsDirInput = document.querySelector<HTMLInputElement>("#geminiSessionsDirInput");
 const hermesSessionsDirInput = document.querySelector<HTMLInputElement>("#hermesSessionsDirInput");
@@ -357,6 +358,7 @@ function setupHistoryCard() {
         <button type="button" data-history-filter="all" data-i18n="all">全部</button>
         <button type="button" data-history-filter="codex">Codex</button>
         <button type="button" data-history-filter="openclaw">OpenClaw</button>
+        <button type="button" data-history-filter="pi">Pi Agent</button>
         <button type="button" data-history-filter="opencode">OpenCode</button>
         <button type="button" data-history-filter="claude">Claude Code</button>
         <button type="button" data-history-filter="gemini">Gemini</button>
@@ -1013,6 +1015,7 @@ function bindEvents() {
   openclawSessionsDirInput?.addEventListener("change", () =>
     updatePathSetting("openclawSessionsDir", openclawSessionsDirInput),
   );
+  piSessionsDirInput?.addEventListener("change", () => updatePathSetting("piSessionsDir", piSessionsDirInput));
   opencodeSessionsDirInput?.addEventListener("change", () =>
     updatePathSetting("opencodeSessionsDir", opencodeSessionsDirInput),
   );
@@ -1174,6 +1177,7 @@ async function updatePathSetting(
     | "codexSessionsDir"
     | "claudeSessionsDir"
     | "openclawSessionsDir"
+    | "piSessionsDir"
     | "opencodeSessionsDir"
     | "geminiSessionsDir"
     | "hermesSessionsDir",
@@ -2261,6 +2265,7 @@ function render() {
     syncInputValue(codexSessionsDirInput, ledger.settings.codexSessionsDir ?? "");
     syncInputValue(claudeSessionsDirInput, ledger.settings.claudeSessionsDir ?? "");
     syncInputValue(openclawSessionsDirInput, ledger.settings.openclawSessionsDir ?? "");
+    syncInputValue(piSessionsDirInput, ledger.settings.piSessionsDir ?? "");
     syncInputValue(opencodeSessionsDirInput, ledger.settings.opencodeSessionsDir ?? "");
     syncInputValue(geminiSessionsDirInput, ledger.settings.geminiSessionsDir ?? "");
     syncInputValue(hermesSessionsDirInput, ledger.settings.hermesSessionsDir ?? "");

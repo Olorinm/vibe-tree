@@ -5,6 +5,7 @@ import type { AgentSource, HistorySourceId, SourceBreakdown, SourceVisibility } 
 export const AGENT_SOURCES = [
   { id: "codex", label: "Codex", statusKey: "codexSession" },
   { id: "openclaw", label: "OpenClaw", statusKey: "openclawSession" },
+  { id: "pi", label: "Pi Agent", statusKey: "piSession" },
   { id: "opencode", label: "OpenCode", statusKey: "opencodeSession" },
   { id: "claude", label: "Claude Code", statusKey: "claudeSession" },
   { id: "gemini", label: "Gemini", statusKey: "geminiSession" },
@@ -57,6 +58,7 @@ export function sourceVisibility(usageStatus: UsageStatus | null, enabledSourceI
 export function historySourceId(entry: LedgerEntry): HistorySourceId | undefined {
   if (entry.source === "codex-session" || entry.agent === "codex-desktop") return "codex";
   if (entry.source === "openclaw-session" || entry.agent === "openclaw") return "openclaw";
+  if (entry.source === "pi-session" || entry.agent === "pi-agent") return "pi";
   if (entry.source === "opencode-session" || entry.agent === "opencode" || Boolean(entry.agent?.startsWith("opencode:"))) {
     return "opencode";
   }
@@ -107,11 +109,13 @@ export function sourceMatchesBreakdownRow(row: SourceBreakdown, sourceId: Histor
     return row.id === "claude-code" || row.id === "claude-session" || row.label === "Claude Code" || row.id.startsWith("claude-code:");
   }
   if (sourceId === "openclaw") return row.id === "openclaw" || row.id === "openclaw-session" || row.label === "OpenClaw";
+  if (sourceId === "pi") return row.id === "pi-agent" || row.id === "pi-session" || row.label === "Pi Agent";
   if (sourceId === "opencode") {
     return row.id === "opencode" || row.id === "opencode-session" || row.label === "OpenCode" || row.id.startsWith("opencode:");
   }
   if (sourceId === "gemini") return row.id === "gemini" || row.id === "gemini-session" || row.label === "Gemini";
-  return row.id === "hermes" || row.id === "hermes-session" || row.label === "Hermes";
+  if (sourceId === "hermes") return row.id === "hermes" || row.id === "hermes-session" || row.label === "Hermes";
+  return false;
 }
 
 export function combineSourceRows(label: string, rows: SourceBreakdown[]): SourceBreakdown {
@@ -132,6 +136,7 @@ export function entryMatchesSourceKey(entry: LedgerEntry, sourceKey: string) {
   if (sourceKey === "codex") return entry.source === "codex-session" || entry.agent === "codex-desktop";
   if (sourceKey === "claude") return entry.source === "claude-session" || Boolean(entry.agent?.startsWith("claude-code"));
   if (sourceKey === "openclaw") return entry.source === "openclaw-session" || entry.agent === "openclaw";
+  if (sourceKey === "pi") return entry.source === "pi-session" || entry.agent === "pi-agent";
   if (sourceKey === "opencode") {
     return entry.source === "opencode-session" || entry.agent === "opencode" || Boolean(entry.agent?.startsWith("opencode:"));
   }
@@ -151,6 +156,7 @@ export function defaultSourceLabel(id: string, source: string, manualLabel: stri
   if (id === "claude-code" || source === "claude-session") return "Claude Code";
   if (id === "codex-desktop" || source === "codex-session") return "Codex";
   if (id === "openclaw" || source === "openclaw-session") return "OpenClaw";
+  if (id === "pi-agent" || source === "pi-session") return "Pi Agent";
   if (id.startsWith("opencode:")) return `OpenCode ${id.replace("opencode:", "")}`;
   if (id === "opencode" || source === "opencode-session") return "OpenCode";
   if (id === "gemini" || source === "gemini-session") return "Gemini";
@@ -159,7 +165,7 @@ export function defaultSourceLabel(id: string, source: string, manualLabel: stri
 }
 
 export function emptySourceTotals(): Record<HistorySourceId, number> {
-  return { codex: 0, openclaw: 0, opencode: 0, claude: 0, gemini: 0, hermes: 0 };
+  return { codex: 0, openclaw: 0, pi: 0, opencode: 0, claude: 0, gemini: 0, hermes: 0 };
 }
 
 export function safeTokens(value: number) {

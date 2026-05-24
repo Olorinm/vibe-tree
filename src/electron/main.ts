@@ -24,6 +24,7 @@ import {
   startHermesSessionWatcher,
   startOpenClawSessionWatcher,
   startOpenCodeSessionWatcher,
+  startPiSessionWatcher,
 } from "./agentSessionWatchers.js";
 import { startCodexSessionWatcher } from "./codexSessionWatcher.js";
 import { MAIN_TEXT, WEATHER_LABELS } from "./i18n.js";
@@ -61,7 +62,7 @@ const MANAGER_MIN_SIZE = { width: 860, height: 620 };
 const APP_NAME = "Vibe Tree";
 const APP_ID = "com.vibetree.app";
 const SMOKE_TEST = process.env.VIBE_TREE_SMOKE_TEST === "1";
-const STAT_SOURCE_IDS = ["codex", "openclaw", "opencode", "claude", "gemini", "hermes"] as const;
+const STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes"] as const;
 const APP_ICON_PATHS = [
   join(__dirname, "../renderer/assets/app-icon.png"),
   join(__dirname, "../renderer/assets/app-icon.ico"),
@@ -129,6 +130,7 @@ let achievementState: AchievementState = { unlocked: [] };
 let codexSessionWatcher: ReturnType<typeof startCodexSessionWatcher> | null = null;
 let claudeSessionWatcher: ReturnType<typeof startClaudeSessionWatcher> | null = null;
 let openclawSessionWatcher: ReturnType<typeof startOpenClawSessionWatcher> | null = null;
+let piSessionWatcher: ReturnType<typeof startPiSessionWatcher> | null = null;
 let opencodeSessionWatcher: ReturnType<typeof startOpenCodeSessionWatcher> | null = null;
 let geminiSessionWatcher: ReturnType<typeof startGeminiSessionWatcher> | null = null;
 let hermesSessionWatcher: ReturnType<typeof startHermesSessionWatcher> | null = null;
@@ -149,6 +151,14 @@ let claudeSessionStatus: UsageStatus["claudeSession"] = {
   importHistory: false,
 };
 let openclawSessionStatus: UsageStatus["openclawSession"] = {
+  running: false,
+  sessionsRoot: "",
+  exists: false,
+  filesWatched: 0,
+  eventsImported: 0,
+  importHistory: false,
+};
+let piSessionStatus: UsageStatus["piSession"] = {
   running: false,
   sessionsRoot: "",
   exists: false,
@@ -508,6 +518,7 @@ function normalizeSettings(settings: Partial<Settings>): Settings {
     codexSessionsDir: cleanPath(settings.codexSessionsDir),
     claudeSessionsDir: cleanPath(settings.claudeSessionsDir),
     openclawSessionsDir: cleanPath(settings.openclawSessionsDir),
+    piSessionsDir: cleanPath(settings.piSessionsDir),
     opencodeSessionsDir: cleanPath(settings.opencodeSessionsDir),
     geminiSessionsDir: cleanPath(settings.geminiSessionsDir),
     hermesSessionsDir: cleanPath(settings.hermesSessionsDir),
@@ -556,7 +567,12 @@ function normalizeTotalDisplayUnit(value: unknown): Settings["totalDisplayUnit"]
 function normalizeEnabledSourceIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [...STAT_SOURCE_IDS];
   const allowed = new Set<string>(STAT_SOURCE_IDS);
-  return [...new Set(value.filter((item): item is string => typeof item === "string" && allowed.has(item)))];
+  const normalized = [...new Set(value.filter((item): item is string => typeof item === "string" && allowed.has(item)))];
+  const hadAllLegacySources = ["codex", "openclaw", "opencode", "claude", "gemini", "hermes"].every((source) =>
+    normalized.includes(source),
+  );
+  if (hadAllLegacySources && !normalized.includes("pi")) normalized.splice(2, 0, "pi");
+  return normalized;
 }
 
 function cleanProxyUrl(value: unknown) {
@@ -1206,6 +1222,10 @@ function refreshTrayMenu() {
       enabled: false,
     },
     {
+      label: sourceStatusLabel("Pi Agent", piSessionStatus, "pi-session"),
+      enabled: false,
+    },
+    {
       label: sourceStatusLabel("OpenCode", opencodeSessionStatus, "opencode-session"),
       enabled: false,
     },
@@ -1335,6 +1355,7 @@ function xpForEntry(entry: LedgerEntry) {
 function statSourceIdForEntry(entry: LedgerEntry): string | undefined {
   if (entry.source === "codex-session" || entry.agent === "codex-desktop") return "codex";
   if (entry.source === "openclaw-session" || entry.agent === "openclaw") return "openclaw";
+  if (entry.source === "pi-session" || entry.agent === "pi-agent") return "pi";
   if (entry.source === "opencode-session" || entry.agent === "opencode" || Boolean(entry.agent?.startsWith("opencode:"))) {
     return "opencode";
   }
@@ -1425,6 +1446,7 @@ function updateSettings(partial: Partial<Settings>) {
     previous.codexSessionsDir !== ledger.settings.codexSessionsDir ||
     previous.claudeSessionsDir !== ledger.settings.claudeSessionsDir ||
     previous.openclawSessionsDir !== ledger.settings.openclawSessionsDir ||
+    previous.piSessionsDir !== ledger.settings.piSessionsDir ||
     previous.opencodeSessionsDir !== ledger.settings.opencodeSessionsDir ||
     previous.geminiSessionsDir !== ledger.settings.geminiSessionsDir ||
     previous.hermesSessionsDir !== ledger.settings.hermesSessionsDir
@@ -1471,6 +1493,7 @@ function getUsageStatus(): UsageStatus {
     codexSession: codexSessionStatus,
     claudeSession: claudeSessionStatus,
     openclawSession: openclawSessionStatus,
+    piSession: piSessionStatus,
     opencodeSession: opencodeSessionStatus,
     geminiSession: geminiSessionStatus,
     hermesSession: hermesSessionStatus,
@@ -2057,6 +2080,16 @@ function startUsageWatchers() {
       broadcast("bonsai:usage-status", getUsageStatus());
     },
   });
+  piSessionWatcher = startPiSessionWatcher({
+    ...common,
+    sessionsRoot: ledger.settings.piSessionsDir,
+    onUsage: appendUsageEvent,
+    onStatus: (status) => {
+      piSessionStatus = status;
+      refreshTrayMenu();
+      broadcast("bonsai:usage-status", getUsageStatus());
+    },
+  });
   opencodeSessionWatcher = startOpenCodeSessionWatcher({
     ...common,
     sessionsRoot: ledger.settings.opencodeSessionsDir,
@@ -2093,12 +2126,14 @@ function stopUsageWatchers() {
   codexSessionWatcher?.close();
   claudeSessionWatcher?.close();
   openclawSessionWatcher?.close();
+  piSessionWatcher?.close();
   opencodeSessionWatcher?.close();
   geminiSessionWatcher?.close();
   hermesSessionWatcher?.close();
   codexSessionWatcher = null;
   claudeSessionWatcher = null;
   openclawSessionWatcher = null;
+  piSessionWatcher = null;
   opencodeSessionWatcher = null;
   geminiSessionWatcher = null;
   hermesSessionWatcher = null;

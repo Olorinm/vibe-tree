@@ -224,9 +224,14 @@ export const ACHIEVEMENT_TEXT_EN: Record<string, AchievementCopy> = {
     description: "Hermes records its first event",
     flavor: "Message delivered. The tree noticed.",
   },
+  pi_connected: {
+    name: "Pi Agent Connected",
+    description: "Pi Agent records its first event",
+    flavor: "A new branch has joined the canopy.",
+  },
   all_agents: {
     name: "Full Agent Set",
-    description: "Connect all six agent sources",
+    description: "Connect all seven agent sources",
     flavor: "The whole squad is here.",
   },
   multi_agent_day: {
@@ -521,6 +526,7 @@ export const UI_TEXT: Record<AppLanguage, Record<string, string>> = {
     codexPath: "Codex 路径",
     claudePath: "Claude 路径",
     openclawPath: "OpenClaw 路径",
+    piPath: "Pi Agent 路径",
     opencodePath: "OpenCode 路径",
     geminiPath: "Gemini 路径",
     hermesPath: "Hermes 路径",
@@ -747,6 +753,7 @@ export const UI_TEXT: Record<AppLanguage, Record<string, string>> = {
     codexPath: "Codex Path",
     claudePath: "Claude Path",
     openclawPath: "OpenClaw Path",
+    piPath: "Pi Agent Path",
     opencodePath: "OpenCode Path",
     geminiPath: "Gemini Path",
     hermesPath: "Hermes Path",

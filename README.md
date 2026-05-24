@@ -32,7 +32,7 @@ Vibe Tree 是一个桌面常驻的 token 天气树。它会读取本地 AI codin
 
 - **桌面像素树**：常驻桌面，支持置顶、拖动、缩放、锁定位置和静默启动。
 - **实时 token 天气**：累计 Token 决定成长等级，当前 token/min 决定天气状态。
-- **多 Agent 数据源**：支持 Codex、Claude Code、OpenClaw、OpenCode、Gemini 和 Hermes。
+- **多 Agent 数据源**：支持 Codex、Claude Code、OpenClaw、Pi Agent、OpenCode、Gemini 和 Hermes。
 - **来源与模型统计**：按 agent 查看 input / output / cache，展开后可查看模型占比。
 - **最近 7 天图表**：按来源筛选近期 token 使用趋势。
 - **成就系统**：记录累计消耗、峰值时刻、连续活跃、时间偏好和 agent 使用里程碑。
@@ -82,6 +82,7 @@ electron_mirror=https://npmmirror.com/mirrors/electron/
 | Codex | ✅ | `~/.codex/sessions/**/*.jsonl` |
 | Claude Code | ✅ | `~/.claude/projects/**/*.jsonl` |
 | OpenClaw | ✅ | `~/.openclaw/agents/**/sessions/*.jsonl` |
+| Pi Agent | ✅ | `~/.pi/agent/sessions/**/*.jsonl` |
 | OpenCode | ✅ | `~/.local/share/opencode/opencode.db`（兼容旧版 `storage/message/**/*.json`） |
 | Gemini | ✅ | 本地 Gemini 会话目录 |
 | Hermes | ✅ | 本地 Hermes 会话目录 |

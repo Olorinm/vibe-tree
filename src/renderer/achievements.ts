@@ -1,7 +1,7 @@
 import type { LedgerEntry } from "../shared/types";
 import type { AchievementCategory, AchievementRarity } from "./i18n";
 
-type HistorySourceId = "codex" | "openclaw" | "opencode" | "claude" | "gemini" | "hermes";
+type HistorySourceId = "codex" | "openclaw" | "pi" | "opencode" | "claude" | "gemini" | "hermes";
 
 interface AchievementStatsSnapshot {
   xp: number;
@@ -360,6 +360,15 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     condition: ({ activeSources }) => activeSources.has("openclaw"),
   },
   {
+    id: "pi_connected",
+    category: "agent",
+    rarity: "rare",
+    name: "Pi Agent 接入",
+    description: "Pi Agent 有第一条事件",
+    flavor: "新的分支长出来了。",
+    condition: ({ activeSources }) => activeSources.has("pi"),
+  },
+  {
     id: "opencode_connected",
     category: "agent",
     rarity: "rare",
@@ -391,9 +400,9 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     category: "agent",
     rarity: "legendary",
     name: "全家桶",
-    description: "六种 agent 全部接入",
+    description: "七种 agent 全部接入",
     flavor: "恭喜获得全家桶套餐，附赠加大可乐。",
-    condition: ({ activeSources }) => activeSources.size >= 6,
+    condition: ({ activeSources }) => activeSources.size >= 7,
   },
   {
     id: "multi_agent_day",

@@ -103,6 +103,7 @@ export interface Settings {
   codexSessionsDir?: string;
   claudeSessionsDir?: string;
   openclawSessionsDir?: string;
+  piSessionsDir?: string;
   opencodeSessionsDir?: string;
   geminiSessionsDir?: string;
   hermesSessionsDir?: string;
@@ -169,6 +170,7 @@ export interface UsageStatus {
   codexSession: SessionMonitorStatus;
   claudeSession: SessionMonitorStatus;
   openclawSession: SessionMonitorStatus;
+  piSession: SessionMonitorStatus;
   opencodeSession: SessionMonitorStatus;
   geminiSession: SessionMonitorStatus;
   hermesSession: SessionMonitorStatus;

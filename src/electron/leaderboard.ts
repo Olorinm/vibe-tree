@@ -584,6 +584,7 @@ const LEADERBOARD_PREFERENCE_RANGES: LeaderboardRange[] = ["today", "7d", "30d",
 const AGENT_LABELS: Record<string, string> = {
   codex: "Codex",
   openclaw: "OpenClaw",
+  pi: "Pi Agent",
   opencode: "OpenCode",
   claude: "Claude Code",
   gemini: "Gemini",
@@ -644,6 +645,7 @@ function agentLabelForEntry(entry: LedgerEntry) {
 function preferenceSourceIdForEntry(entry: LedgerEntry): keyof typeof AGENT_LABELS | undefined {
   if (entry.source === "codex-session" || entry.agent === "codex-desktop") return "codex";
   if (entry.source === "openclaw-session" || entry.agent === "openclaw") return "openclaw";
+  if (entry.source === "pi-session" || entry.agent === "pi-agent") return "pi";
   if (entry.source === "opencode-session" || entry.agent === "opencode" || Boolean(entry.agent?.startsWith("opencode:"))) {
     return "opencode";
   }
