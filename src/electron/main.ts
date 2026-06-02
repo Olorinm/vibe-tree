@@ -2291,20 +2291,49 @@ async function fetchLatestUpdate() {
 type UpdateManifestEntry = Record<string, unknown>;
 
 async function fetchUpdateManifestEntry(version: string): Promise<UpdateManifestEntry | undefined> {
+  const remoteEntry = await fetchRemoteUpdateManifestEntry(version);
+  return remoteEntry ?? readLocalUpdateManifestEntry(version);
+}
+
+async function fetchRemoteUpdateManifestEntry(version: string): Promise<UpdateManifestEntry | undefined> {
   if (!UPDATE_MANIFEST_URL) return undefined;
   try {
     const manifest = await fetchJson(UPDATE_MANIFEST_URL);
-    const versions = Array.isArray((manifest as { versions?: unknown })?.versions)
-      ? (manifest as { versions: unknown[] }).versions
-      : [];
-    return versions.find((entry): entry is UpdateManifestEntry => {
-      if (!entry || typeof entry !== "object") return false;
-      const rawVersion = (entry as { version?: unknown }).version;
-      return typeof rawVersion === "string" && normalizeVersion(rawVersion) === version;
-    });
+    return updateManifestEntryFromManifest(manifest, version);
   } catch {
     return undefined;
   }
+}
+
+function readLocalUpdateManifestEntry(version: string): UpdateManifestEntry | undefined {
+  for (const path of localUpdateManifestCandidates()) {
+    const manifest = readJsonFile<Record<string, unknown>>(path);
+    const entry = updateManifestEntryFromManifest(manifest, version);
+    if (entry) return entry;
+  }
+  return undefined;
+}
+
+function localUpdateManifestCandidates() {
+  const candidates = [
+    join(terminalUpdateRoot() ?? "", "updates/manifest.json"),
+    join(process.cwd(), "updates/manifest.json"),
+    join(__dirname, "../../updates/manifest.json"),
+    join(app.getAppPath(), "updates/manifest.json"),
+    join(process.resourcesPath, "updates/manifest.json"),
+  ].filter(Boolean);
+  return [...new Set(candidates)];
+}
+
+function updateManifestEntryFromManifest(manifest: unknown, version: string): UpdateManifestEntry | undefined {
+  const versions = Array.isArray((manifest as { versions?: unknown })?.versions)
+    ? (manifest as { versions: unknown[] }).versions
+    : [];
+  return versions.find((entry): entry is UpdateManifestEntry => {
+    if (!entry || typeof entry !== "object") return false;
+    const rawVersion = (entry as { version?: unknown }).version;
+    return typeof rawVersion === "string" && normalizeVersion(rawVersion) === version;
+  });
 }
 
 function manifestReleaseUrl(entry: UpdateManifestEntry | undefined) {
@@ -2989,14 +3018,35 @@ ipcMain.handle("social:create-group", (_event, input) => leaderboardService.crea
 ipcMain.handle("social:create-invite", (_event, groupId: string, input) =>
   leaderboardService.createSocialGroupInvite(groupId, input),
 );
-ipcMain.handle("social:accept-invite", (_event, code: string) => leaderboardService.acceptSocialGroupInvite(code));
+ipcMain.handle("social:create-friend-invite", (_event, groupId: string, input) =>
+  leaderboardService.createSocialGroupFriendInvite(groupId, input),
+);
+ipcMain.handle("social:request-group-join", (_event, code: string) => leaderboardService.requestSocialGroupJoin(code));
+ipcMain.handle("social:group-requests:mine", () => leaderboardService.getMySocialGroupRequests());
+ipcMain.handle("social:group-requests:accept", (_event, requestId: string) =>
+  leaderboardService.acceptSocialGroupFriendInvite(requestId),
+);
+ipcMain.handle("social:group-requests:decline", (_event, requestId: string) =>
+  leaderboardService.declineSocialGroupFriendInvite(requestId),
+);
+ipcMain.handle("social:group-requests", (_event, groupId: string) => leaderboardService.getSocialGroupRequests(groupId));
+ipcMain.handle("social:group-requests:approve", (_event, groupId: string, requestId: string) =>
+  leaderboardService.approveSocialGroupRequest(groupId, requestId),
+);
+ipcMain.handle("social:group-requests:moderation-decline", (_event, groupId: string, requestId: string) =>
+  leaderboardService.declineSocialGroupRequest(groupId, requestId),
+);
 ipcMain.handle("social:leave-group", (_event, groupId: string) => leaderboardService.leaveSocialGroup(groupId));
 ipcMain.handle("social:set-group-share-usage", (_event, groupId: string, shareUsage: boolean) =>
   leaderboardService.setSocialGroupShareUsage(groupId, Boolean(shareUsage)),
 );
 ipcMain.handle("social:get-profile", (_event, userId: string) => leaderboardService.getSocialProfile(userId));
-ipcMain.handle("social:group-leaderboard", (_event, groupId: string, range?: unknown) =>
-  leaderboardService.getSocialGroupLeaderboard(groupId, range),
+ipcMain.handle("social:get-profile-privacy", () => leaderboardService.getSocialProfilePrivacy());
+ipcMain.handle("social:update-profile-privacy", (_event, input) =>
+  leaderboardService.updateSocialProfilePrivacy(input),
+);
+ipcMain.handle("social:group-leaderboard", (_event, groupId: string, range?: unknown, basis?: unknown) =>
+  leaderboardService.getSocialGroupLeaderboard(groupId, range, basis),
 );
 ipcMain.handle("cloud-sync:get-status", (): CloudSyncStatus => leaderboardService.cloudStatus());
 ipcMain.handle("cloud-sync:start-new", () => {

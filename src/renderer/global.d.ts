@@ -4,6 +4,7 @@ import type {
   AchievementUnlockResult,
   CloudSyncStatus,
   CreateSocialFriendInput,
+  CreateSocialGroupFriendInviteInput,
   CreateSocialGroupInput,
   CreateSocialGroupInviteInput,
   LedgerFile,
@@ -16,8 +17,13 @@ import type {
   SocialFriendList,
   SocialGroup,
   SocialGroupInvite,
+  SocialGroupJoinRequest,
+  SocialGroupLeaderboardBasis,
   SocialGroupLeaderboardData,
   SocialGroupList,
+  SocialGroupModerationList,
+  SocialGroupRequestList,
+  SocialProfilePrivacy,
   SocialProfileResult,
   ToastPlacement,
   TreeToastItem,
@@ -57,11 +63,20 @@ declare global {
       getSocialGroups: () => Promise<SocialGroupList>;
       createSocialGroup: (input: CreateSocialGroupInput) => Promise<SocialGroup>;
       createSocialGroupInvite: (groupId: string, input?: CreateSocialGroupInviteInput) => Promise<SocialGroupInvite>;
-      acceptSocialGroupInvite: (code: string) => Promise<SocialGroup>;
+      createSocialGroupFriendInvite: (groupId: string, input: CreateSocialGroupFriendInviteInput) => Promise<SocialGroupJoinRequest>;
+      requestSocialGroupJoin: (code: string) => Promise<SocialGroupJoinRequest>;
+      getMySocialGroupRequests: () => Promise<SocialGroupRequestList>;
+      acceptSocialGroupFriendInvite: (requestId: string) => Promise<SocialGroup>;
+      declineSocialGroupFriendInvite: (requestId: string) => Promise<SocialGroupJoinRequest>;
+      getSocialGroupRequests: (groupId: string) => Promise<SocialGroupModerationList>;
+      approveSocialGroupRequest: (groupId: string, requestId: string) => Promise<SocialGroup>;
+      declineSocialGroupRequest: (groupId: string, requestId: string) => Promise<SocialGroupJoinRequest>;
       leaveSocialGroup: (groupId: string) => Promise<void>;
       setSocialGroupShareUsage: (groupId: string, shareUsage: boolean) => Promise<SocialGroup>;
       getSocialProfile: (userId: string) => Promise<SocialProfileResult>;
-      getSocialGroupLeaderboard: (groupId: string, range: LeaderboardRange) => Promise<SocialGroupLeaderboardData>;
+      getSocialProfilePrivacy: () => Promise<SocialProfilePrivacy>;
+      updateSocialProfilePrivacy: (input: Partial<SocialProfilePrivacy>) => Promise<SocialProfilePrivacy>;
+      getSocialGroupLeaderboard: (groupId: string, range: LeaderboardRange, basis?: SocialGroupLeaderboardBasis) => Promise<SocialGroupLeaderboardData>;
       getCloudSyncStatus: () => Promise<CloudSyncStatus>;
       startNewTree: () => Promise<CloudSyncStatus>;
       enableCloudSync: () => Promise<CloudSyncStatus>;

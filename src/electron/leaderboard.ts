@@ -8,6 +8,7 @@ import type {
   CloudModelStat,
   CloudSyncStatus,
   CreateSocialFriendInput,
+  CreateSocialGroupFriendInviteInput,
   CreateSocialGroupInput,
   CreateSocialGroupInviteInput,
   LedgerEntry,
@@ -25,13 +26,18 @@ import type {
   SocialFriendList,
   SocialGroup,
   SocialGroupInvite,
+  SocialGroupJoinRequest,
+  SocialGroupLeaderboardBasis,
   SocialGroupLeaderboardData,
   SocialGroupLeaderboardEntry,
   SocialGroupList,
   SocialGroupMember,
+  SocialGroupModerationList,
+  SocialGroupRequestList,
   SocialGroupRole,
   SocialGroupVisibility,
   SocialProfile,
+  SocialProfilePrivacy,
   SocialProfileResult,
 } from "../shared/types.js";
 
@@ -53,6 +59,7 @@ interface CloudSyncFile {
   lastDownloadedCount?: number;
   devices?: CloudDeviceSummary[];
   modelStats?: CloudModelStat[];
+  modelStatsSignature?: string;
   treeCursor?: string;
 }
 
@@ -337,6 +344,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         body: {
           days: dailyUsage(),
           hours: hourlyUsage(),
+          ...usageTotals(),
           appVersion: options.currentAppVersion(),
           usageStartDate: usageStartDate(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -429,7 +437,8 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         state = mergeCloudState(state, pulled.entries, pulled.achievements, pulled.devices, pulled.modelStats, pulled.cursor);
       }
 
-      await syncCloudDeviceSnapshot();
+      const modelStatsSignature = await syncCloudDeviceSnapshot(state, syncOptions.force === true);
+      state = { ...state, modelStatsSignature };
 
       const syncedEntryIds = new Set(syncOptions.force && !syncOptions.pullFirst ? [] : state.syncedEntryIds ?? []);
       const syncedEventFingerprints = new Set(state.syncedEventFingerprints ?? []);
@@ -684,7 +693,31 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     return invite;
   }
 
-  async function acceptSocialGroupInvite(code: string): Promise<SocialGroup> {
+  async function createSocialGroupFriendInvite(
+    groupId: string,
+    input: CreateSocialGroupFriendInviteInput,
+  ): Promise<SocialGroupJoinRequest> {
+    if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
+    await authenticate();
+    if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
+
+    const targetGroupId = cleanOptionalString(groupId, 80);
+    const userId = cleanOptionalString(input?.userId, 80);
+    if (!targetGroupId || !userId) throw new Error(text("socialGroupFriendInviteFailed"));
+    const data = await requestJson<unknown>(apiUrl(`/api/social/groups/${encodeURIComponent(targetGroupId)}/friend-invites`), {
+      method: "POST",
+      token: auth.token,
+      body: {
+        userId,
+        role: normalizeSocialRole(input.role) === "officer" ? "officer" : "member",
+      },
+    });
+    const joinRequest = normalizeSocialGroupJoinRequest((data as { request?: unknown })?.request ?? data);
+    if (!joinRequest) throw new Error(text("socialGroupFriendInviteFailed"));
+    return joinRequest;
+  }
+
+  async function requestSocialGroupJoin(code: string): Promise<SocialGroupJoinRequest> {
     if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
     await authenticate();
     if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
@@ -695,10 +728,105 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       method: "POST",
       token: auth.token,
     });
+    const joinRequest = normalizeSocialGroupJoinRequest((data as { request?: unknown })?.request ?? data);
+    if (!joinRequest) throw new Error(text("socialInviteAcceptFailed"));
+    return joinRequest;
+  }
+
+  async function getMySocialGroupRequests(): Promise<SocialGroupRequestList> {
+    if (!configured) return socialGroupRequestListWithError(text("leaderboardServiceNotConfigured"));
+    if (!auth.token) return socialGroupRequestListWithError(text("leaderboardLoginRequired"));
+
+    try {
+      const data = await requestJson<unknown>(apiUrl("/api/social/group-requests"), { token: auth.token });
+      return normalizeSocialGroupRequestList(data);
+    } catch (error) {
+      return socialGroupRequestListWithError(error instanceof Error ? error.message : text("socialGroupRequestsLoadFailed"));
+    }
+  }
+
+  async function acceptSocialGroupFriendInvite(requestId: string): Promise<SocialGroup> {
+    if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
+    await authenticate();
+    if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
+
+    const targetRequestId = cleanOptionalString(requestId, 80);
+    if (!targetRequestId) throw new Error(text("socialGroupRequestUpdateFailed"));
+    const data = await requestJson<unknown>(
+      apiUrl(`/api/social/group-requests/${encodeURIComponent(targetRequestId)}/accept`),
+      { method: "POST", token: auth.token },
+    );
     const group = normalizeSocialGroup((data as { group?: unknown })?.group ?? data);
-    if (!group) throw new Error(text("socialInviteAcceptFailed"));
+    if (!group) throw new Error(text("socialGroupRequestUpdateFailed"));
     setSocialGroupCount((ledger().settings.socialGroupCount ?? 0) + 1);
     return group;
+  }
+
+  async function declineSocialGroupFriendInvite(requestId: string): Promise<SocialGroupJoinRequest> {
+    if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
+    await authenticate();
+    if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
+
+    const targetRequestId = cleanOptionalString(requestId, 80);
+    if (!targetRequestId) throw new Error(text("socialGroupRequestUpdateFailed"));
+    const data = await requestJson<unknown>(
+      apiUrl(`/api/social/group-requests/${encodeURIComponent(targetRequestId)}/decline`),
+      { method: "POST", token: auth.token },
+    );
+    const joinRequest = normalizeSocialGroupJoinRequest((data as { request?: unknown })?.request ?? data);
+    if (!joinRequest) throw new Error(text("socialGroupRequestUpdateFailed"));
+    return joinRequest;
+  }
+
+  async function getSocialGroupRequests(groupId: string): Promise<SocialGroupModerationList> {
+    if (!configured) return socialGroupModerationListWithError(text("leaderboardServiceNotConfigured"));
+    if (!auth.token) return socialGroupModerationListWithError(text("leaderboardLoginRequired"));
+
+    const targetGroupId = cleanOptionalString(groupId, 80);
+    if (!targetGroupId) return socialGroupModerationListWithError(text("socialGroupRequestsLoadFailed"));
+    try {
+      const data = await requestJson<unknown>(
+        apiUrl(`/api/social/groups/${encodeURIComponent(targetGroupId)}/requests`),
+        { token: auth.token },
+      );
+      return normalizeSocialGroupModerationList(data);
+    } catch (error) {
+      return socialGroupModerationListWithError(error instanceof Error ? error.message : text("socialGroupRequestsLoadFailed"));
+    }
+  }
+
+  async function approveSocialGroupRequest(groupId: string, requestId: string): Promise<SocialGroup> {
+    if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
+    await authenticate();
+    if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
+
+    const targetGroupId = cleanOptionalString(groupId, 80);
+    const targetRequestId = cleanOptionalString(requestId, 80);
+    if (!targetGroupId || !targetRequestId) throw new Error(text("socialGroupRequestUpdateFailed"));
+    const data = await requestJson<unknown>(
+      apiUrl(`/api/social/groups/${encodeURIComponent(targetGroupId)}/requests/${encodeURIComponent(targetRequestId)}/approve`),
+      { method: "POST", token: auth.token },
+    );
+    const group = normalizeSocialGroup((data as { group?: unknown })?.group ?? data);
+    if (!group) throw new Error(text("socialGroupRequestUpdateFailed"));
+    return group;
+  }
+
+  async function declineSocialGroupRequest(groupId: string, requestId: string): Promise<SocialGroupJoinRequest> {
+    if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
+    await authenticate();
+    if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
+
+    const targetGroupId = cleanOptionalString(groupId, 80);
+    const targetRequestId = cleanOptionalString(requestId, 80);
+    if (!targetGroupId || !targetRequestId) throw new Error(text("socialGroupRequestUpdateFailed"));
+    const data = await requestJson<unknown>(
+      apiUrl(`/api/social/groups/${encodeURIComponent(targetGroupId)}/requests/${encodeURIComponent(targetRequestId)}/decline`),
+      { method: "POST", token: auth.token },
+    );
+    const joinRequest = normalizeSocialGroupJoinRequest((data as { request?: unknown })?.request ?? data);
+    if (!joinRequest) throw new Error(text("socialGroupRequestUpdateFailed"));
+    return joinRequest;
   }
 
   async function leaveSocialGroup(groupId: string): Promise<void> {
@@ -751,20 +879,53 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     }
   }
 
-  async function getSocialGroupLeaderboard(groupId: string, rangeInput: unknown): Promise<SocialGroupLeaderboardData> {
+  async function getSocialProfilePrivacy(): Promise<SocialProfilePrivacy> {
+    if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
+    await authenticate();
+    if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
+    const data = await requestJson<unknown>(apiUrl("/api/social/profile-privacy"), { token: auth.token });
+    return normalizeSocialProfilePrivacy((data as { privacy?: unknown })?.privacy ?? data);
+  }
+
+  async function updateSocialProfilePrivacy(input: Partial<SocialProfilePrivacy>): Promise<SocialProfilePrivacy> {
+    if (!configured) throw new Error(text("leaderboardServiceNotConfigured"));
+    await authenticate();
+    if (!auth.token) throw new Error(text("leaderboardLoginRequired"));
+    const data = await requestJson<unknown>(apiUrl("/api/social/profile-privacy"), {
+      method: "POST",
+      token: auth.token,
+      body: {
+        profileVisibility: normalizeSocialProfileVisibility(input.profileVisibility),
+        showLevel: input.showLevel,
+        showTokenTotal: input.showTokenTotal,
+        showActiveDays: input.showActiveDays,
+        showAchievements: input.showAchievements,
+      },
+    });
+    return normalizeSocialProfilePrivacy((data as { privacy?: unknown })?.privacy ?? data);
+  }
+
+  async function getSocialGroupLeaderboard(
+    groupId: string,
+    rangeInput: unknown,
+    basisInput: unknown,
+  ): Promise<SocialGroupLeaderboardData> {
     const range = normalizeRange(rangeInput);
-    if (!configured) return socialGroupLeaderboardWithError(groupId, range, text("leaderboardServiceNotConfigured"));
-    if (!auth.token) return socialGroupLeaderboardWithError(groupId, range, text("leaderboardLoginRequired"));
+    const basis = normalizeSocialGroupLeaderboardBasis(basisInput);
+    if (!configured) return socialGroupLeaderboardWithError(groupId, range, basis, text("leaderboardServiceNotConfigured"));
+    if (!auth.token) return socialGroupLeaderboardWithError(groupId, range, basis, text("leaderboardLoginRequired"));
 
     try {
       const url = new URL(apiUrl(`/api/social/groups/${encodeURIComponent(groupId)}/leaderboard`));
       url.searchParams.set("range", range);
+      url.searchParams.set("basis", basis);
       const data = await requestJson<unknown>(url.toString(), { token: auth.token });
-      return normalizeSocialGroupLeaderboard(data, groupId, range);
+      return normalizeSocialGroupLeaderboard(data, groupId, range, basis);
     } catch (error) {
       return socialGroupLeaderboardWithError(
         groupId,
         range,
+        basis,
         error instanceof Error ? error.message : text("socialGroupLeaderboardLoadFailed"),
       );
     }
@@ -810,7 +971,10 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     };
   }
 
-  async function syncCloudDeviceSnapshot() {
+  async function syncCloudDeviceSnapshot(state: CloudSyncFile, forceModelStats: boolean) {
+    const modelStats = options.cloudModelStats();
+    const modelStatsSignature = cloudModelStatsSignature(modelStats);
+    const shouldSendModelStats = forceModelStats || state.modelStatsSignature !== modelStatsSignature;
     await requestJson(apiUrl("/api/tree/events"), {
       method: "POST",
       token: auth.token,
@@ -818,10 +982,11 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         deviceId: options.deviceId(),
         device: options.deviceInfo(),
         entries: [],
-        modelStats: options.cloudModelStats(),
+        ...(shouldSendModelStats ? { modelStats } : {}),
         appVersion: options.currentAppVersion(),
       },
     });
+    return modelStatsSignature;
   }
 
   function readCloudSyncState(): CloudSyncFile {
@@ -840,6 +1005,10 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       lastDownloadedCount: positiveInteger(state?.lastDownloadedCount),
       devices: normalizeCloudDevices(state?.devices ?? []),
       modelStats: normalizeCloudModelStats(state?.modelStats ?? []),
+      modelStatsSignature:
+        typeof state?.modelStatsSignature === "string" && state.modelStatsSignature.trim()
+          ? state.modelStatsSignature.trim()
+          : undefined,
       treeCursor: normalizeTreeCursor(state?.treeCursor),
     };
   }
@@ -853,6 +1022,10 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       lastDownloadedCount: positiveInteger(state.lastDownloadedCount) ?? 0,
       devices: normalizeCloudDevices(state.devices ?? []),
       modelStats: normalizeCloudModelStats(state.modelStats ?? []),
+      modelStatsSignature:
+        typeof state.modelStatsSignature === "string" && state.modelStatsSignature.trim()
+          ? state.modelStatsSignature.trim()
+          : undefined,
       treeCursor: normalizeTreeCursor(state.treeCursor),
     });
   }
@@ -1021,6 +1194,28 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         const rounded = Math.round(tokens);
         return { date, tokens: rounded, xp: rounded };
       });
+  }
+
+  function usageTotals() {
+    const activeDates = new Set<string>();
+    let totalTokens = 0;
+
+    for (const entry of ledger().entries) {
+      const createdAt = new Date(entry.createdAt);
+      if (!Number.isFinite(createdAt.getTime())) continue;
+      const tokens = options.xpForEntry(entry);
+      if (tokens <= 0) continue;
+      totalTokens += tokens;
+      activeDates.add(options.dateKey(createdAt));
+    }
+
+    const rounded = Math.round(totalTokens);
+    return {
+      totalTokens: rounded,
+      totalXp: rounded,
+      totalDaysActive: activeDates.size,
+      firstUsageDate: usageStartDate(),
+    };
   }
 
   function hourlyUsage() {
@@ -1241,10 +1436,19 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     getSocialGroups,
     createSocialGroup,
     createSocialGroupInvite,
-    acceptSocialGroupInvite,
+    createSocialGroupFriendInvite,
+    requestSocialGroupJoin,
+    getMySocialGroupRequests,
+    acceptSocialGroupFriendInvite,
+    declineSocialGroupFriendInvite,
+    getSocialGroupRequests,
+    approveSocialGroupRequest,
+    declineSocialGroupRequest,
     leaveSocialGroup,
     setSocialGroupShareUsage,
     getSocialProfile,
+    getSocialProfilePrivacy,
+    updateSocialProfilePrivacy,
     getSocialGroupLeaderboard,
   };
 }
@@ -1388,6 +1592,23 @@ function cloudModelStatKey(stat: CloudModelStat) {
   return [stat.deviceId, stat.date, stat.source, stat.model].join("|");
 }
 
+function cloudModelStatsSignature(stats: CloudModelStat[]) {
+  const normalized = normalizeCloudModelStats(stats)
+    .sort((left, right) => cloudModelStatKey(left).localeCompare(cloudModelStatKey(right)))
+    .map((stat) => ({
+      deviceId: stat.deviceId,
+      date: stat.date,
+      source: stat.source,
+      model: stat.model,
+      tokens: stat.tokens,
+      inputTokens: stat.inputTokens ?? 0,
+      outputTokens: stat.outputTokens ?? 0,
+      cacheReadTokens: stat.cacheReadTokens ?? 0,
+      cacheWriteTokens: stat.cacheWriteTokens ?? 0,
+    }));
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
+
 function normalizeTreeCursor(value: unknown) {
   if (typeof value !== "string") return undefined;
   const date = new Date(value);
@@ -1493,6 +1714,10 @@ function chunkArray<T>(items: T[], size: number) {
 function normalizeRange(value: unknown): LeaderboardRange {
   if (value === "today" || value === "24h") return "24h";
   return value === "30d" || value === "all" ? value : "7d";
+}
+
+function normalizeSocialGroupLeaderboardBasis(value: unknown): SocialGroupLeaderboardBasis {
+  return value === "since_join" || value === "joined" ? "since_join" : "total";
 }
 
 const LEADERBOARD_PREFERENCE_RANGES: LeaderboardRange[] = ["24h", "7d", "30d", "all"];
@@ -1656,6 +1881,14 @@ function socialFriendListWithError(error: string): SocialFriendList {
   return { friends: [], error };
 }
 
+function socialGroupRequestListWithError(error: string): SocialGroupRequestList {
+  return { incomingInvites: [], outgoingRequests: [], error };
+}
+
+function socialGroupModerationListWithError(error: string): SocialGroupModerationList {
+  return { requests: [], error };
+}
+
 function normalizeSocialFriendList(value: unknown): SocialFriendList {
   const list = value as Partial<SocialFriendList> | undefined;
   const friends = Array.isArray(list?.friends)
@@ -1694,6 +1927,76 @@ function normalizeSocialGroupList(value: unknown): SocialGroupList {
     typeof list?.updatedAt === "string" && Number.isFinite(Date.parse(list.updatedAt)) ? list.updatedAt : undefined;
   const error = typeof list?.error === "string" ? list.error : undefined;
   return { groups, updatedAt, error };
+}
+
+function normalizeSocialGroupRequestList(value: unknown): SocialGroupRequestList {
+  const list = value as Partial<SocialGroupRequestList> | undefined;
+  const incomingInvites = Array.isArray(list?.incomingInvites)
+    ? list.incomingInvites
+        .map(normalizeSocialGroupJoinRequest)
+        .filter((item): item is SocialGroupJoinRequest => Boolean(item))
+    : [];
+  const outgoingRequests = Array.isArray(list?.outgoingRequests)
+    ? list.outgoingRequests
+        .map(normalizeSocialGroupJoinRequest)
+        .filter((item): item is SocialGroupJoinRequest => Boolean(item))
+    : [];
+  const updatedAt =
+    typeof list?.updatedAt === "string" && Number.isFinite(Date.parse(list.updatedAt)) ? list.updatedAt : undefined;
+  const error = typeof list?.error === "string" ? list.error : undefined;
+  return { incomingInvites, outgoingRequests, updatedAt, error };
+}
+
+function normalizeSocialGroupModerationList(value: unknown): SocialGroupModerationList {
+  const list = value as Partial<SocialGroupModerationList> | undefined;
+  const requests = Array.isArray(list?.requests)
+    ? list.requests
+        .map(normalizeSocialGroupJoinRequest)
+        .filter((item): item is SocialGroupJoinRequest => Boolean(item))
+    : [];
+  const updatedAt =
+    typeof list?.updatedAt === "string" && Number.isFinite(Date.parse(list.updatedAt)) ? list.updatedAt : undefined;
+  const error = typeof list?.error === "string" ? list.error : undefined;
+  return { requests, updatedAt, error };
+}
+
+function normalizeSocialGroupJoinRequest(value: unknown): SocialGroupJoinRequest | undefined {
+  const item = value as Partial<SocialGroupJoinRequest> | undefined;
+  if (!item) return undefined;
+  const requestId = typeof item.requestId === "string" && item.requestId.trim() ? item.requestId.trim() : undefined;
+  const groupId = typeof item.groupId === "string" && item.groupId.trim() ? item.groupId.trim() : undefined;
+  const groupName = typeof item.groupName === "string" && item.groupName.trim() ? item.groupName.trim() : undefined;
+  const requesterUserId =
+    typeof item.requesterUserId === "string" && item.requesterUserId.trim() ? item.requesterUserId.trim() : undefined;
+  const requesterUsername =
+    typeof item.requesterUsername === "string" && item.requesterUsername.trim() ? item.requesterUsername.trim() : undefined;
+  const type = normalizeSocialGroupJoinRequestType(item.type);
+  const status = normalizeSocialGroupJoinRequestStatus(item.status);
+  const role = normalizeSocialRole(item.role);
+  if (!requestId || !groupId || !groupName || !requesterUserId || !requesterUsername || !type || !status || !role || role === "leader") {
+    return undefined;
+  }
+  return {
+    requestId,
+    groupId,
+    groupName,
+    groupIconEmoji: cleanOptionalString(item.groupIconEmoji, 8),
+    type,
+    status,
+    role,
+    requesterUserId,
+    requesterUsername,
+    requesterAvatarUrl: cleanOptionalString(item.requesterAvatarUrl, 300),
+    invitedByUserId: cleanOptionalString(item.invitedByUserId, 80),
+    invitedByUsername: cleanOptionalString(item.invitedByUsername, 80),
+    invitedByAvatarUrl: cleanOptionalString(item.invitedByAvatarUrl, 300),
+    createdAt:
+      typeof item.createdAt === "string" && Number.isFinite(Date.parse(item.createdAt)) ? item.createdAt : undefined,
+    updatedAt:
+      typeof item.updatedAt === "string" && Number.isFinite(Date.parse(item.updatedAt)) ? item.updatedAt : undefined,
+    expiresAt:
+      typeof item.expiresAt === "string" && Number.isFinite(Date.parse(item.expiresAt)) ? item.expiresAt : undefined,
+  };
 }
 
 function normalizeSocialGroup(value: unknown): SocialGroup | undefined {
@@ -1783,10 +2086,34 @@ function normalizeSocialProfile(value: unknown): SocialProfile | undefined {
     friendCount: nonNegativeInteger(profile.friendCount) ?? 0,
     groupCount: nonNegativeInteger(profile.groupCount) ?? 0,
     usageVisible,
-    totalTokens: usageVisible ? nonNegativeInteger(profile.totalTokens) ?? 0 : undefined,
-    daysActive: usageVisible ? nonNegativeInteger(profile.daysActive) ?? 0 : undefined,
-    achievements: usageVisible ? achievements : undefined,
+    levelVisible: usageVisible && profile.levelVisible !== false,
+    tokenTotalVisible: usageVisible && profile.tokenTotalVisible !== false && profile.totalTokens !== undefined,
+    activeDaysVisible: usageVisible && profile.activeDaysVisible !== false && profile.daysActive !== undefined,
+    achievementsVisible: usageVisible && profile.achievementsVisible !== false && profile.achievements !== undefined,
+    level: usageVisible ? nonNegativeInteger(profile.level) : undefined,
+    totalTokens: usageVisible && profile.totalTokens !== undefined ? nonNegativeInteger(profile.totalTokens) ?? 0 : undefined,
+    daysActive: usageVisible && profile.daysActive !== undefined ? nonNegativeInteger(profile.daysActive) ?? 0 : undefined,
+    achievements: usageVisible && profile.achievements !== undefined ? achievements : undefined,
   };
+}
+
+function normalizeSocialProfilePrivacy(value: unknown): SocialProfilePrivacy {
+  const privacy = value as Partial<SocialProfilePrivacy> | undefined;
+  return {
+    profileVisibility: normalizeSocialProfileVisibility(privacy?.profileVisibility) ?? "relations",
+    showLevel: privacy?.showLevel !== false,
+    showTokenTotal: privacy?.showTokenTotal !== false,
+    showActiveDays: privacy?.showActiveDays !== false,
+    showAchievements: privacy?.showAchievements !== false,
+    updatedAt:
+      typeof privacy?.updatedAt === "string" && Number.isFinite(Date.parse(privacy.updatedAt))
+        ? privacy.updatedAt
+        : undefined,
+  };
+}
+
+function normalizeSocialProfileVisibility(value: unknown): SocialProfilePrivacy["profileVisibility"] | undefined {
+  return value === "relations" || value === "friends" || value === "private" ? value : undefined;
 }
 
 function normalizeSocialInvite(value: unknown): SocialGroupInvite | undefined {
@@ -1813,11 +2140,13 @@ function normalizeSocialGroupLeaderboard(
   value: unknown,
   fallbackGroupId: string,
   fallbackRange: LeaderboardRange,
+  fallbackBasis: SocialGroupLeaderboardBasis,
 ): SocialGroupLeaderboardData {
   const data = value as Partial<SocialGroupLeaderboardData> | undefined;
   const groupId =
     typeof data?.groupId === "string" && data.groupId.trim() ? data.groupId.trim() : fallbackGroupId;
   const range = normalizeRange(data?.range ?? fallbackRange);
+  const basis = normalizeSocialGroupLeaderboardBasis(data?.basis ?? fallbackBasis);
   const entries = Array.isArray(data?.entries)
     ? data.entries
         .map(normalizeSocialGroupLeaderboardEntry)
@@ -1827,15 +2156,16 @@ function normalizeSocialGroupLeaderboard(
   const updatedAt =
     typeof data?.updatedAt === "string" && Number.isFinite(Date.parse(data.updatedAt)) ? data.updatedAt : undefined;
   const error = typeof data?.error === "string" ? data.error : undefined;
-  return { groupId, range, entries, updatedAt, me, error };
+  return { groupId, range, basis, entries, updatedAt, me, error };
 }
 
 function socialGroupLeaderboardWithError(
   groupId: string,
   range: LeaderboardRange,
+  basis: SocialGroupLeaderboardBasis,
   error: string,
 ): SocialGroupLeaderboardData {
-  return { groupId, range, entries: [], error };
+  return { groupId, range, basis, entries: [], error };
 }
 
 function normalizeSocialGroupLeaderboardEntry(value: unknown): SocialGroupLeaderboardEntry | undefined {
@@ -1847,6 +2177,16 @@ function normalizeSocialGroupLeaderboardEntry(value: unknown): SocialGroupLeader
 
 function normalizeSocialRole(value: unknown): SocialGroupRole | undefined {
   return value === "leader" || value === "officer" || value === "member" ? value : undefined;
+}
+
+function normalizeSocialGroupJoinRequestType(value: unknown): SocialGroupJoinRequest["type"] | undefined {
+  return value === "invite_code" || value === "friend_invite" ? value : undefined;
+}
+
+function normalizeSocialGroupJoinRequestStatus(value: unknown): SocialGroupJoinRequest["status"] | undefined {
+  return value === "pending" || value === "approved" || value === "declined" || value === "cancelled"
+    ? value
+    : undefined;
 }
 
 function normalizeSocialVisibility(value: unknown): SocialGroupVisibility | undefined {

@@ -2,6 +2,77 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.7.1",
+      "publishedAt": "2026-06-02",
+      "fullReleaseUrl": "https://github.com/Olorinm/vibe-tree/releases/tag/v0.7.1",
+      "title": {
+        "zh-CN": "Vibe Tree v0.7.1",
+        "en-US": "Vibe Tree v0.7.1"
+      },
+      "summary": {
+        "zh-CN": "本次更新是 v0.7 社交和 macOS 菜单栏体验的补丁版：群组加入流程更完整，资料卡隐私可配置，群组排行榜口径更清楚，菜单栏浮窗的实时速率和排行榜展示也更稳定。升级后，本机小树和已有同步数据都会保留；社交、排行榜和同养小树仍然是可选功能。",
+        "en-US": "This patch polishes the v0.7 social and macOS menu bar experience: group joining is more complete, profile-card privacy is configurable, group leaderboard semantics are clearer, and the menu bar live-rate and leaderboard views are more stable. Your local tree and existing synced data stay intact; social features, leaderboards, and shared-tree sync remain optional."
+      },
+      "highlights": {
+        "zh-CN": [
+          "群组加入流程改成申请 / 审批机制：邀请码不再直接把人拉进群，群主或管理员可以统一处理待加入成员。",
+          "群主和管理员现在可以直接邀请好友入群，对方会在社交页看到邀请并选择加入或忽略。",
+          "资料卡新增隐私设置，可以控制谁能打开你的资料卡，以及是否展示等级、累计 Token、活跃天数和成就陈列。",
+          "群组排行榜支持在“总用量”和“入群后贡献”之间切换，同时继续保留 24h、7 天、30 天和全部时间范围。",
+          "macOS 菜单栏浮窗继续打磨：实时速率图使用统一口径，排行榜标题明确为 24h，翻页和组件展示也更稳。",
+          "排行榜 7 天和 30 天范围现在会展示对应时间范围内有记录的用户，不再只显示当天活跃的人。"
+        ],
+        "en-US": [
+          "Group joining now uses a request and approval flow: invite codes no longer add people immediately, and leaders or officers can review pending members.",
+          "Group leaders and officers can directly invite friends; invited friends can accept or dismiss the invite from the Social page.",
+          "Profile-card privacy settings let you choose who can open your card and whether level, total tokens, active days, and achievements are shown.",
+          "Group leaderboards can switch between “total usage” and “since-joining contribution” while keeping the 24h, 7d, 30d, and all-time ranges.",
+          "The macOS menu bar popover is more polished: live-rate data uses one consistent basis, leaderboard copy says 24h clearly, and paging/component display is steadier.",
+          "The 7d and 30d leaderboards now include users with activity in those ranges instead of only users active today."
+        ]
+      },
+      "fixes": {
+        "zh-CN": [
+          "修复全球榜和群组榜的 7 天 / 30 天人数异常偏少的问题。",
+          "修复当前版本内容在网络不稳定时可能显示英文 GitHub Release 正文的问题。",
+          "修复菜单栏实时速率图中端点圆形被拉伸、口径说明容易混淆的问题。",
+          "优化同养小树的模型聚合增量同步，减少不必要的重复快照。",
+          "补充社交和同步验证，覆盖群组申请、好友邀请、资料卡隐私、排行榜退出和隐私 payload 边界。"
+        ],
+        "en-US": [
+          "Fixed global and group 7d / 30d leaderboards showing too few users.",
+          "Fixed the current-version dialog falling back to English GitHub release notes when the manifest fetch is unstable.",
+          "Fixed stretched endpoint circles and confusing basis copy in the menu bar live-rate chart.",
+          "Improved shared-tree model aggregate delta sync to avoid unnecessary repeated snapshots.",
+          "Expanded social and sync verification for join requests, friend invites, profile privacy, leaderboard leave safety, and privacy payload boundaries."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "社交、排行榜和同养小树仍然都是可选功能。",
+          "资料卡隐私只控制聚合展示项，例如等级、累计 Token、活跃天数和成就。",
+          "群组榜和资料卡只使用 Token 数字、关系状态和聚合统计；不会上传提示词、回复内容、代码文件、本地路径或会话正文。"
+        ],
+        "en-US": [
+          "Social features, leaderboards, and shared-tree sync remain optional.",
+          "Profile-card privacy only controls aggregate display fields such as level, total tokens, active days, and achievements.",
+          "Group leaderboards and profile cards use token counts, relationship state, and aggregate statistics only; prompts, replies, code files, local paths, and session text are not uploaded."
+        ]
+      },
+      "upgradeNotes": {
+        "zh-CN": [
+          "升级不会清空本机数据。",
+          "排行榜本地缓存最长约 1 小时；如果刚升级后还看到旧榜单，稍后会自动更新，也可以使用排行榜页的刷新入口。",
+          "如果 macOS 菜单栏图标暂时看不到，可能是系统菜单栏空间不足，可以先收起不常用的状态栏图标。"
+        ],
+        "en-US": [
+          "Upgrading does not clear local data.",
+          "Leaderboard data may be locally cached for up to about one hour; if you still see old standings right after upgrading, they will refresh later, or you can use the leaderboard refresh action.",
+          "If the macOS menu bar icon is not visible, the system menu bar may be out of space; hide less-used status items and try again."
+        ]
+      }
+    },
+    {
       "version": "0.7.0",
       "publishedAt": "2026-06-01",
       "fullReleaseUrl": "https://github.com/Olorinm/vibe-tree/releases/tag/v0.7.0",

@@ -27,7 +27,13 @@
     "db:migrate:usage-visibility": "wrangler d1 execute vibe-tree-leaderboard --remote --file=./migrations/20260531_usage_visibility.sql",
     "db:migrate:usage-visibility:local": "wrangler d1 execute vibe-tree-leaderboard --local --file=./migrations/20260531_usage_visibility.sql",
     "db:migrate:social-invite-redemptions": "wrangler d1 execute vibe-tree-leaderboard --remote --file=./migrations/20260531_social_group_invite_redemptions.sql",
-    "db:migrate:social-invite-redemptions:local": "wrangler d1 execute vibe-tree-leaderboard --local --file=./migrations/20260531_social_group_invite_redemptions.sql"
+    "db:migrate:social-invite-redemptions:local": "wrangler d1 execute vibe-tree-leaderboard --local --file=./migrations/20260531_social_group_invite_redemptions.sql",
+    "db:migrate:social-profile-privacy": "wrangler d1 execute vibe-tree-leaderboard --remote --file=./migrations/20260601_social_profile_privacy.sql",
+    "db:migrate:social-profile-privacy:local": "wrangler d1 execute vibe-tree-leaderboard --local --file=./migrations/20260601_social_profile_privacy.sql",
+    "db:migrate:usage-totals": "wrangler d1 execute vibe-tree-leaderboard --remote --file=./migrations/20260601_usage_totals.sql",
+    "db:migrate:usage-totals:local": "wrangler d1 execute vibe-tree-leaderboard --local --file=./migrations/20260601_usage_totals.sql",
+    "db:migrate:social-join-requests": "wrangler d1 execute vibe-tree-leaderboard --remote --file=./migrations/20260601_social_group_join_requests.sql",
+    "db:migrate:social-join-requests:local": "wrangler d1 execute vibe-tree-leaderboard --local --file=./migrations/20260601_social_group_join_requests.sql"
   },
   "devDependencies": {
     "wrangler": "^3.114.0"

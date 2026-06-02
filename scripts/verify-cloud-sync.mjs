@@ -127,21 +127,24 @@ function createFakeCloud() {
       const unlocked = [...achievements.values()]
         .filter((item) => rowTimestamp(item) > since && rowTimestamp(item) <= cursor)
         .sort((left, right) => rowTimestamp(left).localeCompare(rowTimestamp(right)));
+      const changedModelStats = [...modelStats.values()]
+        .filter((item) => rowTimestamp(item) > since && rowTimestamp(item) <= cursor)
+        .sort((left, right) => rowTimestamp(left).localeCompare(rowTimestamp(right)));
       return {
         entries,
         achievements: unlocked,
         devices: [...devices.values()],
-        modelStats: [...modelStats.values()],
+        modelStats: changedModelStats,
         cursor,
         delta: true,
         devicesFull: true,
-        modelStatsFull: true,
+        modelStatsFull: false,
         summary: {
           hasRemoteTree: entries.length > 0 || unlocked.length > 0 || devices.size > 0 || modelStats.size > 0,
           entryCount: entries.length,
           achievementCount: unlocked.length,
           deviceCount: devices.size,
-          modelStatCount: modelStats.size,
+          modelStatCount: changedModelStats.length,
         },
       };
     }
@@ -630,6 +633,38 @@ assert(
   "cloud should not let one device re-upload another device's aggregate model totals",
 );
 
+const modelStatsCacheCloud = createFakeCloud();
+const modelStatsCacheDevice = createDevice("model-cache", "model-cache-device", modelStatsCacheCloud, {
+  entries: [localEntry("model-cache-1", "model-cache-device", "codex-session", "2026-05-27T02:10:00.000Z", 900)],
+});
+modelStatsCacheDevice.ledger.settings.cloudSyncEnabled = true;
+modelStatsCacheDevice.ledger.settings.treeStartMode = "new";
+status = await modelStatsCacheDevice.service.syncCloudTree({ force: true });
+assert(!status.error, `model stat cache seed sync failed: ${status.error}`);
+const modelStatUploadCountAfterSeed = modelStatsCacheCloud.requests.filter(
+  (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.modelStats),
+).length;
+status = await modelStatsCacheDevice.service.syncCloudTree();
+assert(!status.error, `model stat cache repeat sync failed: ${status.error}`);
+assert(
+  modelStatsCacheCloud.requests.filter(
+    (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.modelStats),
+  ).length === modelStatUploadCountAfterSeed,
+  "repeat cloud sync should not resend unchanged aggregate model stats",
+);
+modelStatsCacheDevice.ledger.entries.unshift(
+  localEntry("model-cache-2", "model-cache-device", "codex-session", "2026-05-27T02:20:00.000Z", 100),
+);
+status = await modelStatsCacheDevice.service.syncCloudTree();
+assert(!status.error, `model stat cache changed sync failed: ${status.error}`);
+assert(
+  modelStatsCacheCloud.requests.filter(
+    (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.modelStats),
+  ).length === modelStatUploadCountAfterSeed + 1,
+  "changed aggregate model stats should still upload on the next cloud sync",
+);
+modelStatsCacheDevice.service.stop();
+
 const legacyModelCloud = createFakeCloud();
 legacyModelCloud.events.set("codex-session:legacy-no-device-model", {
   id: "codex-session:legacy-no-device-model",
@@ -869,5 +904,5 @@ assert(status.lastSyncedAt, "joining the leaderboard should wait for the first d
 leaderboardDevice.service.stop();
 
 console.log(
-  "Cloud sync contract verified: auth cancellation, two-device merge, delta sync and full fallback, zero-token cloud tree join, dedupe, authoritative cloud tokens, empty-account guard, hourly leaderboard upload, leaderboard leave safety, and privacy payload whitelist passed.",
+  "Cloud sync contract verified: auth cancellation, two-device merge, delta sync and full fallback, aggregate model-stat cache, zero-token cloud tree join, dedupe, authoritative cloud tokens, empty-account guard, hourly leaderboard upload, leaderboard leave safety, and privacy payload whitelist passed.",
 );

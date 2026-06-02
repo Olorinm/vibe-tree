@@ -10,11 +10,15 @@ export interface Env {
 }
 
 type LeaderboardRange = "24h" | "7d" | "30d" | "all";
+type SocialGroupLeaderboardBasis = "total" | "since_join";
 type UsagePreferencePeriod = "early" | "morning" | "afternoon" | "evening" | "night";
 type RateLimitName = "PUBLIC_READ_RATE_LIMITER" | "AUTH_RATE_LIMITER" | "WRITE_RATE_LIMITER";
 type SocialFriendStatus = "pending" | "accepted";
 type SocialGroupRole = "leader" | "officer" | "member";
 type SocialGroupVisibility = "invite" | "closed";
+type SocialGroupJoinRequestType = "invite_code" | "friend_invite";
+type SocialGroupJoinRequestStatus = "pending" | "approved" | "declined" | "cancelled";
+type SocialProfileVisibility = "relations" | "friends" | "private";
 type SecurityEventType =
   | "rate_limited"
   | "invalid_callback"
@@ -32,6 +36,23 @@ const SYNC_COOLDOWN_SECONDS = 30;
 const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
 const LEADERBOARD_RANGES: LeaderboardRange[] = ["24h", "7d", "30d", "all"];
 const leaderboardCache = new Map<LeaderboardRange, { expiresAt: number; updatedAt: string; entries: LeaderboardEntry[] }>();
+const PROFILE_LEVEL_BASE = 100_000;
+const PROFILE_LEVEL_EXPONENT = 1.65;
+const PROFILE_MAX_LEVEL = 120;
+
+interface SocialProfilePrivacy {
+  profileVisibility: SocialProfileVisibility;
+  showLevel: boolean;
+  showTokenTotal: boolean;
+  showActiveDays: boolean;
+  showAchievements: boolean;
+  updatedAt?: string;
+}
+
+interface UsageTotals {
+  tokens: number;
+  daysActive: number;
+}
 
 interface RateLimitBinding {
   limit(options: { key: string }): Promise<{ success: boolean }>;
@@ -449,9 +470,17 @@ async function deleteMe(request: Request, env: Env) {
   await ensureUsagePreferencesTable(env);
   await ensureHourlyUsageTable(env);
   await ensureUsageVisibilityTable(env);
+  await ensureUsageTotalsTable(env);
   await ensureCloudTreeTables(env);
   await ensureSocialTables(env);
   await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM social_group_join_requests
+       WHERE requester_user_id = ?
+          OR invited_by_user_id = ?
+          OR resolved_by_user_id = ?
+          OR group_id IN (SELECT group_id FROM social_groups WHERE owner_user_id = ?)`,
+    ).bind(user.userId, user.userId, user.userId, user.userId),
     env.DB.prepare(
       `DELETE FROM social_group_invite_redemptions
        WHERE user_id = ?
@@ -480,6 +509,7 @@ async function deleteMe(request: Request, env: Env) {
     env.DB.prepare("DELETE FROM tree_model_stats WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM usage_preferences WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM usage_visibility WHERE user_id = ?").bind(user.userId),
+    env.DB.prepare("DELETE FROM usage_totals WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM sync_limits WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM auth_codes WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.userId),
@@ -523,6 +553,28 @@ async function handleSocialRoute(request: Request, env: Env) {
     return await requestSocialFriend(request, env);
   }
 
+  if (url.pathname === "/api/social/profile-privacy" && request.method === "GET") {
+    return await getSocialProfilePrivacy(request, env);
+  }
+
+  if (url.pathname === "/api/social/profile-privacy" && request.method === "POST") {
+    return await updateSocialProfilePrivacy(request, env);
+  }
+
+  if (url.pathname === "/api/social/group-requests" && request.method === "GET") {
+    return await listMySocialGroupRequests(request, env);
+  }
+
+  const myGroupRequestAcceptMatch = url.pathname.match(/^\/api\/social\/group-requests\/([^/]+)\/accept$/);
+  if (myGroupRequestAcceptMatch && request.method === "POST") {
+    return await acceptMySocialGroupRequest(request, env, decodeURIComponent(myGroupRequestAcceptMatch[1]));
+  }
+
+  const myGroupRequestDeclineMatch = url.pathname.match(/^\/api\/social\/group-requests\/([^/]+)\/decline$/);
+  if (myGroupRequestDeclineMatch && request.method === "POST") {
+    return await declineMySocialGroupRequest(request, env, decodeURIComponent(myGroupRequestDeclineMatch[1]));
+  }
+
   const friendAcceptMatch = url.pathname.match(/^\/api\/social\/friends\/([^/]+)\/accept$/);
   if (friendAcceptMatch && request.method === "POST") {
     return await acceptSocialFriend(request, env, decodeURIComponent(friendAcceptMatch[1]));
@@ -541,6 +593,36 @@ async function handleSocialRoute(request: Request, env: Env) {
   const inviteCreateMatch = url.pathname.match(/^\/api\/social\/groups\/([^/]+)\/invites$/);
   if (inviteCreateMatch && request.method === "POST") {
     return await createSocialGroupInvite(request, env, decodeURIComponent(inviteCreateMatch[1]));
+  }
+
+  const friendInviteCreateMatch = url.pathname.match(/^\/api\/social\/groups\/([^/]+)\/friend-invites$/);
+  if (friendInviteCreateMatch && request.method === "POST") {
+    return await createSocialGroupFriendInvite(request, env, decodeURIComponent(friendInviteCreateMatch[1]));
+  }
+
+  const groupRequestsMatch = url.pathname.match(/^\/api\/social\/groups\/([^/]+)\/requests$/);
+  if (groupRequestsMatch && request.method === "GET") {
+    return await listSocialGroupJoinRequests(request, env, decodeURIComponent(groupRequestsMatch[1]));
+  }
+
+  const groupRequestApproveMatch = url.pathname.match(/^\/api\/social\/groups\/([^/]+)\/requests\/([^/]+)\/approve$/);
+  if (groupRequestApproveMatch && request.method === "POST") {
+    return await approveSocialGroupJoinRequest(
+      request,
+      env,
+      decodeURIComponent(groupRequestApproveMatch[1]),
+      decodeURIComponent(groupRequestApproveMatch[2]),
+    );
+  }
+
+  const groupRequestDeclineMatch = url.pathname.match(/^\/api\/social\/groups\/([^/]+)\/requests\/([^/]+)\/decline$/);
+  if (groupRequestDeclineMatch && request.method === "POST") {
+    return await declineSocialGroupJoinRequest(
+      request,
+      env,
+      decodeURIComponent(groupRequestDeclineMatch[1]),
+      decodeURIComponent(groupRequestDeclineMatch[2]),
+    );
   }
 
   const leaveGroupMatch = url.pathname.match(/^\/api\/social\/groups\/([^/]+)\/members\/me$/);
@@ -732,6 +814,155 @@ async function createSocialGroupInvite(request: Request, env: Env, groupId: stri
   }, env, 201);
 }
 
+async function createSocialGroupFriendInvite(request: Request, env: Env, groupId: string) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  await requireSocialGroupManager(groupId, user.userId, env);
+  const body = await request.json().catch(() => undefined) as
+    | { userId?: unknown; role?: unknown }
+    | undefined;
+  const targetUserId = cleanShortText(body?.userId, 80);
+  if (!targetUserId || targetUserId === user.userId) {
+    throw new HttpError(400, "Friend invite target is invalid.", {}, "invalid_payload");
+  }
+  const target = await env.DB.prepare(
+    "SELECT user_id AS userId FROM users WHERE user_id = ?",
+  ).bind(targetUserId).first<{ userId?: string }>();
+  if (!target?.userId) throw new HttpError(404, "User not found.");
+  const role = normalizeSocialGroupRole(body?.role) ?? "member";
+  if (role === "leader") throw new HttpError(400, "Invite role cannot be leader.", {}, "invalid_payload");
+  const pair = orderedSocialUserPair(user.userId, targetUserId);
+  const friendship = await socialFriendshipRow(pair.userLow, pair.userHigh, env);
+  if (normalizeSocialFriendStatus(friendship?.status) !== "accepted") {
+    throw new HttpError(403, "Only accepted friends can be invited directly.");
+  }
+  const existingMember = await socialGroupMembership(groupId, targetUserId, env);
+  if (existingMember) throw new HttpError(409, "This friend is already in the group.");
+  const existingRequest = await pendingSocialGroupJoinRequest(groupId, targetUserId, env);
+  if (existingRequest) {
+    return json({
+      request: await socialGroupJoinRequestPayload(String(existingRequest.requestId), env),
+      alreadyPending: true,
+    }, env);
+  }
+
+  const now = new Date().toISOString();
+  const requestId = `req_${randomToken().slice(0, 18)}`;
+  await env.DB.prepare(
+    `INSERT INTO social_group_join_requests
+       (request_id, group_id, requester_user_id, invited_by_user_id, invite_code_hash,
+        request_type, role, status, message, expires_at, created_at, updated_at, resolved_by_user_id, resolved_at)
+     VALUES (?, ?, ?, ?, NULL, 'friend_invite', ?, 'pending', NULL, ?, ?, ?, NULL, NULL)`,
+  ).bind(requestId, groupId, targetUserId, user.userId, role, null, now, now).run();
+  return json({ request: await socialGroupJoinRequestPayload(requestId, env) }, env, 201);
+}
+
+async function listMySocialGroupRequests(request: Request, env: Env) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  const now = new Date().toISOString();
+  const rows = await env.DB.prepare(
+    `${socialGroupJoinRequestSelect()}
+     WHERE r.requester_user_id = ?
+       AND r.status = 'pending'
+       AND (r.expires_at IS NULL OR r.expires_at > ?)
+     ORDER BY r.updated_at DESC`,
+  ).bind(user.userId, now).all<Record<string, unknown>>();
+  const requests = (rows.results || []).map(socialGroupJoinRequestFromRow);
+  return json({
+    incomingInvites: requests.filter((item) => item.type === "friend_invite"),
+    outgoingRequests: requests.filter((item) => item.type === "invite_code"),
+    updatedAt: now,
+  }, env);
+}
+
+async function acceptMySocialGroupRequest(request: Request, env: Env, requestId: string) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  const targetRequestId = cleanShortText(requestId, 80);
+  if (!targetRequestId) throw new HttpError(400, "Group invite request is invalid.", {}, "invalid_payload");
+  const row = await pendingSocialGroupJoinRequestById(targetRequestId, env);
+  if (!row || String(row.requesterUserId) !== user.userId) throw new HttpError(404, "Group invite request not found.");
+  if (normalizeSocialGroupJoinRequestType(row.type) !== "friend_invite") {
+    throw new HttpError(403, "Invite-code requests must be approved by the group.");
+  }
+  const groupId = String(row.groupId);
+  const now = new Date().toISOString();
+  const role = normalizeSocialGroupRole(row.role) === "officer" ? "officer" : "member";
+  await env.DB.batch([
+    socialGroupMemberInsertFromJoinRequest(groupId, user.userId, role, now, env),
+    env.DB.prepare(
+      `UPDATE social_group_join_requests
+       SET status = 'approved', updated_at = ?, resolved_by_user_id = ?, resolved_at = ?
+       WHERE request_id = ? AND status = 'pending'`,
+    ).bind(now, user.userId, now, targetRequestId),
+  ]);
+  return json({
+    group: await requireSocialGroupPayload(groupId, user.userId, env),
+    request: await socialGroupJoinRequestPayload(targetRequestId, env),
+  }, env);
+}
+
+async function declineMySocialGroupRequest(request: Request, env: Env, requestId: string) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  const targetRequestId = cleanShortText(requestId, 80);
+  if (!targetRequestId) throw new HttpError(400, "Group invite request is invalid.", {}, "invalid_payload");
+  const row = await pendingSocialGroupJoinRequestById(targetRequestId, env);
+  if (!row || String(row.requesterUserId) !== user.userId) throw new HttpError(404, "Group invite request not found.");
+  const status: SocialGroupJoinRequestStatus =
+    normalizeSocialGroupJoinRequestType(row.type) === "invite_code" ? "cancelled" : "declined";
+  await resolveSocialGroupJoinRequest(row, status, user.userId, env);
+  return json({ request: await socialGroupJoinRequestPayload(targetRequestId, env) }, env);
+}
+
+async function listSocialGroupJoinRequests(request: Request, env: Env, groupId: string) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  await requireSocialGroupManager(groupId, user.userId, env);
+  return json(await socialGroupModerationPayload(groupId, env), env);
+}
+
+async function approveSocialGroupJoinRequest(request: Request, env: Env, groupId: string, requestId: string) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  await requireSocialGroupManager(groupId, user.userId, env);
+  const targetRequestId = cleanShortText(requestId, 80);
+  if (!targetRequestId) throw new HttpError(400, "Group join request is invalid.", {}, "invalid_payload");
+  const row = await pendingSocialGroupJoinRequestById(targetRequestId, env);
+  if (!row || String(row.groupId) !== groupId) throw new HttpError(404, "Group join request not found.");
+  if (normalizeSocialGroupJoinRequestType(row.type) !== "invite_code") {
+    throw new HttpError(409, "Friend invites must be accepted by the invited user.");
+  }
+  const requesterUserId = String(row.requesterUserId);
+  const now = new Date().toISOString();
+  const role = normalizeSocialGroupRole(row.role) === "officer" ? "officer" : "member";
+  await env.DB.batch([
+    socialGroupMemberInsertFromJoinRequest(groupId, requesterUserId, role, now, env),
+    env.DB.prepare(
+      `UPDATE social_group_join_requests
+       SET status = 'approved', updated_at = ?, resolved_by_user_id = ?, resolved_at = ?
+       WHERE request_id = ? AND status = 'pending'`,
+    ).bind(now, user.userId, now, targetRequestId),
+  ]);
+  return json({
+    group: await requireSocialGroupPayload(groupId, user.userId, env),
+    request: await socialGroupJoinRequestPayload(targetRequestId, env),
+  }, env);
+}
+
+async function declineSocialGroupJoinRequest(request: Request, env: Env, groupId: string, requestId: string) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  await requireSocialGroupManager(groupId, user.userId, env);
+  const targetRequestId = cleanShortText(requestId, 80);
+  if (!targetRequestId) throw new HttpError(400, "Group join request is invalid.", {}, "invalid_payload");
+  const row = await pendingSocialGroupJoinRequestById(targetRequestId, env);
+  if (!row || String(row.groupId) !== groupId) throw new HttpError(404, "Group join request not found.");
+  await resolveSocialGroupJoinRequest(row, "declined", user.userId, env);
+  return json({ request: await socialGroupJoinRequestPayload(targetRequestId, env) }, env);
+}
+
 async function leaveSocialGroup(request: Request, env: Env, groupId: string) {
   const user = await requireAuth(request, env);
   await ensureSocialTables(env);
@@ -758,6 +989,48 @@ async function setSocialGroupShareUsage(request: Request, env: Env, groupId: str
     "UPDATE social_group_members SET share_usage = ?, updated_at = ? WHERE group_id = ? AND user_id = ?",
   ).bind(shareUsage, new Date().toISOString(), groupId, user.userId).run();
   return json({ group: await requireSocialGroupPayload(groupId, user.userId, env) }, env);
+}
+
+async function getSocialProfilePrivacy(request: Request, env: Env) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  return json({ privacy: await socialProfilePrivacyForUser(user.userId, env) }, env);
+}
+
+async function updateSocialProfilePrivacy(request: Request, env: Env) {
+  const user = await requireAuth(request, env);
+  await ensureSocialTables(env);
+  const current = await socialProfilePrivacyForUser(user.userId, env);
+  const body = await request.json().catch(() => undefined) as Partial<SocialProfilePrivacy> | undefined;
+  const next: SocialProfilePrivacy = {
+    profileVisibility: normalizeSocialProfileVisibility(body?.profileVisibility) ?? current.profileVisibility,
+    showLevel: typeof body?.showLevel === "boolean" ? body.showLevel : current.showLevel,
+    showTokenTotal: typeof body?.showTokenTotal === "boolean" ? body.showTokenTotal : current.showTokenTotal,
+    showActiveDays: typeof body?.showActiveDays === "boolean" ? body.showActiveDays : current.showActiveDays,
+    showAchievements: typeof body?.showAchievements === "boolean" ? body.showAchievements : current.showAchievements,
+    updatedAt: new Date().toISOString(),
+  };
+  await env.DB.prepare(
+    `INSERT INTO social_profile_privacy
+       (user_id, profile_visibility, show_level, show_token_total, show_active_days, show_achievements, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       profile_visibility = excluded.profile_visibility,
+       show_level = excluded.show_level,
+       show_token_total = excluded.show_token_total,
+       show_active_days = excluded.show_active_days,
+       show_achievements = excluded.show_achievements,
+       updated_at = excluded.updated_at`,
+  ).bind(
+    user.userId,
+    next.profileVisibility,
+    next.showLevel ? 1 : 0,
+    next.showTokenTotal ? 1 : 0,
+    next.showActiveDays ? 1 : 0,
+    next.showAchievements ? 1 : 0,
+    next.updatedAt,
+  ).run();
+  return json({ privacy: next }, env);
 }
 
 async function getSocialProfile(request: Request, env: Env, targetUserId: string) {
@@ -790,7 +1063,12 @@ async function getSocialProfile(request: Request, env: Env, targetUserId: string
          WHERE a.user_id = ?`,
       ).bind(target, user.userId).first<{ count?: number }>();
   const mutualGroupCount = numberOrZero(mutualGroupRow?.count);
-  if (!isSelf && !isFriend && mutualGroupCount === 0) {
+  const privacy = await socialProfilePrivacyForUser(target, env);
+  const canOpenProfile =
+    isSelf ||
+    (privacy.profileVisibility === "relations" && (isFriend || mutualGroupCount > 0)) ||
+    (privacy.profileVisibility === "friends" && isFriend);
+  if (!canOpenProfile) {
     throw new HttpError(404, "Profile not found.");
   }
 
@@ -808,9 +1086,12 @@ async function getSocialProfile(request: Request, env: Env, targetUserId: string
     } else {
       const sharedRow = await env.DB.prepare(
         `SELECT COUNT(*) AS count
-         FROM social_group_members a
-         JOIN social_group_members b ON b.group_id = a.group_id AND b.user_id = ? AND b.share_usage > 0
-         WHERE a.user_id = ?`,
+         FROM social_group_members viewer_member
+         JOIN social_group_members target_member
+           ON target_member.group_id = viewer_member.group_id
+          AND target_member.user_id = ?
+          AND target_member.share_usage > 0
+         WHERE viewer_member.user_id = ?`,
       ).bind(target, user.userId).first<{ count?: number }>();
       usageVisible = numberOrZero(sharedRow?.count) > 0;
     }
@@ -833,26 +1114,35 @@ async function getSocialProfile(request: Request, env: Env, targetUserId: string
     mutualGroupCount,
     friendCount: numberOrZero(friendCountRow?.count),
     groupCount: numberOrZero(groupCountRow?.count),
-    usageVisible,
   };
 
-  if (usageVisible) {
-    const usageRow = await env.DB.prepare(
-      `SELECT COALESCE(SUM(xp), 0) AS tokens,
-              COALESCE(SUM(CASE WHEN xp > 0 THEN 1 ELSE 0 END), 0) AS daysActive
-       FROM daily_usage WHERE user_id = ?`,
-    ).bind(target).first<{ tokens?: number; daysActive?: number }>();
-    profile.totalTokens = numberOrZero(usageRow?.tokens);
-    profile.daysActive = numberOrZero(usageRow?.daysActive);
+  const levelVisible = usageVisible && (isSelf || privacy.showLevel);
+  const tokenTotalVisible = usageVisible && (isSelf || privacy.showTokenTotal);
+  const activeDaysVisible = usageVisible && (isSelf || privacy.showActiveDays);
+  const achievementsVisible = usageVisible && (isSelf || privacy.showAchievements);
+  profile.usageVisible = levelVisible || tokenTotalVisible || activeDaysVisible || achievementsVisible;
+  profile.levelVisible = levelVisible;
+  profile.tokenTotalVisible = tokenTotalVisible;
+  profile.activeDaysVisible = activeDaysVisible;
+  profile.achievementsVisible = achievementsVisible;
 
-    await ensureCloudTreeTables(env);
-    const achievementRows = await env.DB.prepare(
-      "SELECT achievement_id AS id, unlocked_at AS unlockedAt FROM tree_achievements WHERE user_id = ? ORDER BY unlocked_at ASC",
-    ).bind(target).all<Record<string, unknown>>();
-    profile.achievements = (achievementRows.results || []).map((row) => ({
-      id: String(row.id),
-      unlockedAt: typeof row.unlockedAt === "string" ? row.unlockedAt : undefined,
-    }));
+  if (usageVisible) {
+    const usageTotals = await usageTotalsForUser(target, env);
+    const totalTokens = usageTotals.tokens;
+    if (levelVisible) profile.level = levelForProfileTokens(totalTokens);
+    if (tokenTotalVisible) profile.totalTokens = totalTokens;
+    if (activeDaysVisible) profile.daysActive = usageTotals.daysActive;
+
+    if (achievementsVisible) {
+      await ensureCloudTreeTables(env);
+      const achievementRows = await env.DB.prepare(
+        "SELECT achievement_id AS id, unlocked_at AS unlockedAt FROM tree_achievements WHERE user_id = ? ORDER BY unlocked_at ASC",
+      ).bind(target).all<Record<string, unknown>>();
+      profile.achievements = (achievementRows.results || []).map((row) => ({
+        id: String(row.id),
+        unlockedAt: typeof row.unlockedAt === "string" ? row.unlockedAt : undefined,
+      }));
+    }
   }
 
   return json({ profile }, env);
@@ -880,62 +1170,69 @@ async function acceptSocialGroupInvite(request: Request, env: Env, code: string)
 
   const groupId = String(invite.groupId);
   const existing = await socialGroupMembership(groupId, user.userId, env);
-  if (!existing) {
-    const redemption = await env.DB.prepare(
-      `INSERT OR IGNORE INTO social_group_invite_redemptions
-         (invite_code_hash, user_id, group_id, created_at)
-       VALUES (?, ?, ?, ?)`,
-    ).bind(codeHash, user.userId, groupId, now).run();
-    if (!redemption.meta.changes) {
-      const member = await socialGroupMembership(groupId, user.userId, env);
-      if (!member) throw new HttpError(409, "Invite acceptance is already in progress.");
-      return json({
-        group: await requireSocialGroupPayload(groupId, user.userId, env),
-        alreadyMember: true,
-      }, env);
-    }
-
-    // Atomically claim a use: the WHERE re-checks max_uses inside the write so two
-    // concurrent accepts can't both pass the read above and over-issue the invite.
-    // SQLite serializes writes, so exactly maxUses updates win. The redemption row
-    // above prevents one user from double-consuming the same invite in parallel.
-    const claim = await env.DB.prepare(
-      `UPDATE social_group_invites
-       SET uses = uses + 1, updated_at = ?
-       WHERE invite_code_hash = ?
-         AND revoked_at IS NULL
-         AND (expires_at IS NULL OR expires_at > ?)
-         AND (max_uses IS NULL OR uses < max_uses)`,
-    ).bind(now, codeHash, now).run();
-    if (!claim.meta.changes) {
-      await env.DB.prepare(
-        "DELETE FROM social_group_invite_redemptions WHERE invite_code_hash = ? AND user_id = ?",
-      ).bind(codeHash, user.userId).run();
-      throw new HttpError(410, "Invite has been used up.");
-    }
-    const inserted = await env.DB.prepare(
-      `INSERT OR IGNORE INTO social_group_members
-         (group_id, user_id, role, share_usage, joined_at, updated_at)
-       VALUES (?, ?, ?, 1, ?, ?)`,
-    ).bind(groupId, user.userId, normalizeSocialGroupRole(invite.role) ?? "member", now, now).run();
-    if (!inserted.meta.changes) {
-      await env.DB.batch([
-        env.DB.prepare(
-          "DELETE FROM social_group_invite_redemptions WHERE invite_code_hash = ? AND user_id = ?",
-        ).bind(codeHash, user.userId),
-        env.DB.prepare(
-          `UPDATE social_group_invites
-           SET uses = CASE WHEN uses > 0 THEN uses - 1 ELSE 0 END, updated_at = ?
-           WHERE invite_code_hash = ?`,
-        ).bind(now, codeHash),
-      ]);
-    }
+  if (existing) {
+    return json({
+      group: await requireSocialGroupPayload(groupId, user.userId, env),
+      alreadyMember: true,
+    }, env);
   }
 
-  return json({
-    group: await requireSocialGroupPayload(groupId, user.userId, env),
-    alreadyMember: Boolean(existing),
-  }, env);
+  const existingRequest = await pendingSocialGroupJoinRequest(groupId, user.userId, env);
+  if (existingRequest) {
+    return json({
+      request: await socialGroupJoinRequestPayload(String(existingRequest.requestId), env),
+      alreadyPending: true,
+    }, env);
+  }
+
+  const redemption = await env.DB.prepare(
+    `INSERT OR IGNORE INTO social_group_invite_redemptions
+       (invite_code_hash, user_id, group_id, created_at)
+     VALUES (?, ?, ?, ?)`,
+  ).bind(codeHash, user.userId, groupId, now).run();
+  if (!redemption.meta.changes) throw new HttpError(409, "Invite request was already submitted.");
+
+  // Reserve an invite use while the approval request is pending. If the request
+  // is declined or cancelled, the reservation is released.
+  const claim = await env.DB.prepare(
+    `UPDATE social_group_invites
+     SET uses = uses + 1, updated_at = ?
+     WHERE invite_code_hash = ?
+       AND revoked_at IS NULL
+       AND (expires_at IS NULL OR expires_at > ?)
+       AND (max_uses IS NULL OR uses < max_uses)`,
+  ).bind(now, codeHash, now).run();
+  if (!claim.meta.changes) {
+    await env.DB.prepare(
+      "DELETE FROM social_group_invite_redemptions WHERE invite_code_hash = ? AND user_id = ?",
+    ).bind(codeHash, user.userId).run();
+    throw new HttpError(410, "Invite has been used up.");
+  }
+
+  const role = normalizeSocialGroupRole(invite.role);
+  const requestId = `req_${randomToken().slice(0, 18)}`;
+  try {
+    await env.DB.prepare(
+      `INSERT INTO social_group_join_requests
+         (request_id, group_id, requester_user_id, invited_by_user_id, invite_code_hash,
+          request_type, role, status, message, expires_at, created_at, updated_at, resolved_by_user_id, resolved_at)
+       VALUES (?, ?, ?, NULL, ?, 'invite_code', ?, 'pending', NULL, NULL, ?, ?, NULL, NULL)`,
+    ).bind(requestId, groupId, user.userId, codeHash, role === "officer" ? "officer" : "member", now, now).run();
+  } catch (error) {
+    await env.DB.batch([
+      env.DB.prepare(
+        "DELETE FROM social_group_invite_redemptions WHERE invite_code_hash = ? AND user_id = ?",
+      ).bind(codeHash, user.userId),
+      env.DB.prepare(
+        `UPDATE social_group_invites
+         SET uses = CASE WHEN uses > 0 THEN uses - 1 ELSE 0 END, updated_at = ?
+         WHERE invite_code_hash = ?`,
+      ).bind(now, codeHash),
+    ]);
+    throw error;
+  }
+
+  return json({ request: await socialGroupJoinRequestPayload(requestId, env) }, env, 202);
 }
 
 async function getSocialGroupLeaderboard(request: Request, env: Env, groupId: string) {
@@ -944,8 +1241,10 @@ async function getSocialGroupLeaderboard(request: Request, env: Env, groupId: st
   await ensureUsagePreferencesTable(env);
   await ensureHourlyUsageTable(env);
   await requireSocialGroupMembership(groupId, user.userId, env);
-  const range = normalizeRange(new URL(request.url).searchParams.get("range"));
-  return json(await socialGroupLeaderboardDataForRange(groupId, range, user, env, new Date().toISOString()), env);
+  const url = new URL(request.url);
+  const range = normalizeRange(url.searchParams.get("range"));
+  const basis = normalizeSocialGroupLeaderboardBasis(url.searchParams.get("basis"));
+  return json(await socialGroupLeaderboardDataForRange(groupId, range, basis, user, env, new Date().toISOString()), env);
 }
 
 async function getCloudTree(request: Request, env: Env) {
@@ -988,6 +1287,21 @@ async function cloudTreePayload(userId: string, env: Env, since?: string) {
        FROM tree_achievements
        WHERE user_id = ?
        ORDER BY unlocked_at ASC`;
+  const modelStatQuery = since
+    ? `SELECT device_id AS deviceId, date, source, model, tokens,
+              input_tokens AS inputTokens, output_tokens AS outputTokens,
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens
+       FROM tree_model_stats
+       WHERE user_id = ? AND updated_at > ? AND updated_at <= ?
+       ORDER BY updated_at ASC, date ASC, source ASC, model ASC
+       LIMIT 5000`
+    : `SELECT device_id AS deviceId, date, source, model, tokens,
+              input_tokens AS inputTokens, output_tokens AS outputTokens,
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens
+       FROM tree_model_stats
+       WHERE user_id = ?
+       ORDER BY date ASC, source ASC, model ASC
+       LIMIT 5000`;
   const [eventRows, achievementRows, deviceRows, deviceTotalRows, modelStatRows] = await Promise.all([
     env.DB.prepare(
       eventQuery,
@@ -1007,14 +1321,8 @@ async function cloudTreePayload(userId: string, env: Env, since?: string) {
        WHERE user_id = ?`,
     ).bind(userId).all<Record<string, unknown>>(),
     env.DB.prepare(
-      `SELECT device_id AS deviceId, date, source, model, tokens,
-              input_tokens AS inputTokens, output_tokens AS outputTokens,
-              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens
-       FROM tree_model_stats
-       WHERE user_id = ?
-       ORDER BY date ASC, source ASC, model ASC
-       LIMIT 5000`,
-    ).bind(userId).all<Record<string, unknown>>(),
+      modelStatQuery,
+    ).bind(...(since ? [userId, since, cursor] : [userId])).all<Record<string, unknown>>(),
   ]);
   const entries = (eventRows.results || []).map((row) => ({
     id: String(row.id),
@@ -1091,7 +1399,7 @@ async function cloudTreePayload(userId: string, env: Env, since?: string) {
     modelStats,
     cursor,
     delta: Boolean(since),
-    modelStatsFull: true,
+    modelStatsFull: !since,
     devicesFull: true,
     summary: {
       hasRemoteTree: entries.length > 0 || achievements.length > 0 || devices.length > 0 || modelStats.length > 0,
@@ -1164,6 +1472,10 @@ async function syncDailyUsage(request: Request, env: Env) {
     | {
         days?: Array<{ date?: string; tokens?: number; xp?: number }>;
         hours?: Array<{ hourStartUtc?: string; hourStart?: string; tokens?: number; xp?: number }>;
+        totalTokens?: number;
+        totalXp?: number;
+        totalDaysActive?: number;
+        firstUsageDate?: string;
         appVersion?: string;
         usageStartDate?: string;
         forceSync?: boolean;
@@ -1186,6 +1498,9 @@ async function syncDailyUsage(request: Request, env: Env) {
   const hourWindow = hourlySyncWindow(new Date());
   const normalizedDays = normalizeDailyUsageRows(days, syncWindow);
   const normalizedHours = hasHourlyUsage ? normalizeHourlyUsageRows(hours, hourWindow) : [];
+  const totalTokens = normalizeTokenCount(body?.totalXp ?? body?.totalTokens);
+  const totalDaysActive = normalizeActiveDays(body?.totalDaysActive);
+  const firstUsageDate = normalizeUsageStartDate(body?.firstUsageDate ?? body?.usageStartDate);
   const preferenceRows = usagePreferencesPublic ? normalizeUsagePreferenceRows(usagePreferenceInput) : [];
   const statements = normalizedDays.map((day) =>
     env.DB.prepare(
@@ -1240,6 +1555,7 @@ async function syncDailyUsage(request: Request, env: Env) {
   await ensureUsagePreferencesTable(env);
   await ensureHourlyUsageTable(env);
   await ensureUsageVisibilityTable(env);
+  await ensureUsageTotalsTable(env);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM daily_usage WHERE user_id = ? AND date >= ? AND date <= ?")
       .bind(user.userId, syncWindow.earliest, syncWindow.latest),
@@ -1257,6 +1573,20 @@ async function syncDailyUsage(request: Request, env: Env) {
     env.DB.prepare("DELETE FROM usage_preferences WHERE user_id = ?").bind(user.userId),
     ...statements,
     ...hourlyStatements,
+    ...(totalTokens !== undefined
+      ? [
+          env.DB.prepare(
+            `INSERT INTO usage_totals (user_id, tokens, days_active, first_usage_date, app_version, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(user_id) DO UPDATE SET
+               tokens = excluded.tokens,
+               days_active = excluded.days_active,
+               first_usage_date = excluded.first_usage_date,
+               app_version = excluded.app_version,
+               updated_at = excluded.updated_at`,
+          ).bind(user.userId, totalTokens, totalDaysActive ?? 0, firstUsageDate ?? null, appVersion, now),
+        ]
+      : []),
     ...preferenceStatements,
     env.DB.prepare(
       `INSERT INTO sync_limits (user_id, last_synced_at)
@@ -1278,6 +1608,7 @@ async function syncDailyUsage(request: Request, env: Env) {
       synced: statements.length,
       syncedHours: hourlyStatements.length,
       syncedPreferences: preferenceStatements.length,
+      syncedTotals: totalTokens !== undefined ? 1 : 0,
       leaderboardType: "community",
       usageStartDate,
       safetyMaxDailyTokens: MAX_DAILY_ACCEPTED_TOKENS,
@@ -1357,6 +1688,23 @@ async function ensureUsageVisibilityTable(env: Env) {
       FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
     )`,
   ).run();
+}
+
+async function ensureUsageTotalsTable(env: Env) {
+  await env.DB.batch([
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS usage_totals (
+        user_id TEXT PRIMARY KEY,
+        tokens INTEGER NOT NULL DEFAULT 0,
+        days_active INTEGER NOT NULL DEFAULT 0,
+        first_usage_date TEXT,
+        app_version TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      )`,
+    ),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_usage_totals_tokens ON usage_totals(tokens)"),
+  ]);
 }
 
 async function ensureCloudTreeTables(env: Env) {
@@ -1518,6 +1866,41 @@ async function ensureSocialTables(env: Env) {
         FOREIGN KEY (group_id) REFERENCES social_groups(group_id) ON DELETE CASCADE
       )`,
     ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS social_group_join_requests (
+        request_id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        requester_user_id TEXT NOT NULL,
+        invited_by_user_id TEXT,
+        invite_code_hash TEXT,
+        request_type TEXT NOT NULL,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL,
+        message TEXT,
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        resolved_by_user_id TEXT,
+        resolved_at TEXT,
+        FOREIGN KEY (group_id) REFERENCES social_groups(group_id) ON DELETE CASCADE,
+        FOREIGN KEY (requester_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+        FOREIGN KEY (invited_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL,
+        FOREIGN KEY (invite_code_hash) REFERENCES social_group_invites(invite_code_hash) ON DELETE SET NULL,
+        FOREIGN KEY (resolved_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+      )`,
+    ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS social_profile_privacy (
+        user_id TEXT PRIMARY KEY,
+        profile_visibility TEXT NOT NULL DEFAULT 'relations',
+        show_level INTEGER NOT NULL DEFAULT 1,
+        show_token_total INTEGER NOT NULL DEFAULT 1,
+        show_active_days INTEGER NOT NULL DEFAULT 1,
+        show_achievements INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      )`,
+    ),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_friendships_requester ON social_friendships(requester_user_id)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_friendships_status ON social_friendships(status)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_friendships_user_high ON social_friendships(user_high)"),
@@ -1528,6 +1911,10 @@ async function ensureSocialTables(env: Env) {
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_group_invites_creator ON social_group_invites(created_by_user_id)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_group_invites_expires ON social_group_invites(expires_at)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_group_invite_redemptions_user ON social_group_invite_redemptions(user_id)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_group_join_requests_group_status ON social_group_join_requests(group_id, status)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_group_join_requests_requester_status ON social_group_join_requests(requester_user_id, status)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_social_group_join_requests_inviter ON social_group_join_requests(invited_by_user_id)"),
+    env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_social_group_join_requests_pending_user ON social_group_join_requests(group_id, requester_user_id) WHERE status = 'pending'"),
   ]);
 }
 
@@ -1680,6 +2067,202 @@ async function socialGroupMembership(groupId: string, userId: string, env: Env) 
   };
 }
 
+async function requireSocialGroupManager(groupId: string, userId: string, env: Env) {
+  const membership = await requireSocialGroupMembership(groupId, userId, env);
+  if (membership.role !== "leader" && membership.role !== "officer") {
+    throw new HttpError(403, "Only group leaders and officers can manage join requests.");
+  }
+  return membership;
+}
+
+function socialGroupMemberInsertFromJoinRequest(
+  groupId: string,
+  userId: string,
+  role: Exclude<SocialGroupRole, "leader">,
+  now: string,
+  env: Env,
+) {
+  return env.DB.prepare(
+    `INSERT OR IGNORE INTO social_group_members
+       (group_id, user_id, role, share_usage, joined_at, updated_at)
+     VALUES (?, ?, ?, 1, ?, ?)`,
+  ).bind(groupId, userId, role, now, now);
+}
+
+function socialGroupJoinRequestSelect() {
+  return `SELECT r.request_id AS requestId, r.group_id AS groupId, g.name AS groupName,
+                 g.icon_emoji AS groupIconEmoji, r.request_type AS type, r.status, r.role,
+                 r.requester_user_id AS requesterUserId, requester.username AS requesterUsername,
+                 requester.avatar_url AS requesterAvatarUrl,
+                 r.invited_by_user_id AS invitedByUserId, inviter.username AS invitedByUsername,
+                 inviter.avatar_url AS invitedByAvatarUrl,
+                 r.invite_code_hash AS inviteCodeHash, r.expires_at AS expiresAt,
+                 r.created_at AS createdAt, r.updated_at AS updatedAt
+          FROM social_group_join_requests r
+          JOIN social_groups g ON g.group_id = r.group_id
+          JOIN users requester ON requester.user_id = r.requester_user_id
+          LEFT JOIN users inviter ON inviter.user_id = r.invited_by_user_id`;
+}
+
+async function socialGroupJoinRequestPayload(requestId: string, env: Env) {
+  const row = await env.DB.prepare(
+    `${socialGroupJoinRequestSelect()}
+     WHERE r.request_id = ?`,
+  ).bind(requestId).first<Record<string, unknown>>();
+  if (!row) throw new HttpError(404, "Group join request not found.");
+  return socialGroupJoinRequestFromRow(row);
+}
+
+async function pendingSocialGroupJoinRequest(groupId: string, requesterUserId: string, env: Env) {
+  return await env.DB.prepare(
+    `SELECT request_id AS requestId
+     FROM social_group_join_requests
+     WHERE group_id = ? AND requester_user_id = ? AND status = 'pending'
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+  ).bind(groupId, requesterUserId).first<Record<string, unknown>>();
+}
+
+async function pendingSocialGroupJoinRequestById(requestId: string, env: Env) {
+  return await env.DB.prepare(
+    `${socialGroupJoinRequestSelect()}
+     WHERE r.request_id = ? AND r.status = 'pending'`,
+  ).bind(requestId).first<Record<string, unknown>>();
+}
+
+async function socialGroupModerationPayload(groupId: string, env: Env) {
+  const now = new Date().toISOString();
+  const rows = await env.DB.prepare(
+    `${socialGroupJoinRequestSelect()}
+     WHERE r.group_id = ? AND r.status = 'pending'
+     ORDER BY r.updated_at DESC`,
+  ).bind(groupId).all<Record<string, unknown>>();
+  return {
+    requests: (rows.results || []).map(socialGroupJoinRequestFromRow),
+    updatedAt: now,
+  };
+}
+
+async function resolveSocialGroupJoinRequest(
+  row: Record<string, unknown>,
+  status: SocialGroupJoinRequestStatus,
+  resolvedByUserId: string,
+  env: Env,
+) {
+  const requestId = String(row.requestId);
+  const now = new Date().toISOString();
+  const statements = [
+    env.DB.prepare(
+      `UPDATE social_group_join_requests
+       SET status = ?, updated_at = ?, resolved_by_user_id = ?, resolved_at = ?
+       WHERE request_id = ? AND status = 'pending'`,
+    ).bind(status, now, resolvedByUserId, now, requestId),
+  ];
+  if (status !== "approved") statements.push(...releaseJoinRequestInviteReservation(row, now, env));
+  await env.DB.batch(statements);
+}
+
+function releaseJoinRequestInviteReservation(row: Record<string, unknown>, now: string, env: Env) {
+  const type = normalizeSocialGroupJoinRequestType(row.type);
+  const inviteCodeHash = typeof row.inviteCodeHash === "string" ? row.inviteCodeHash : undefined;
+  const requesterUserId = cleanShortText(row.requesterUserId, 80);
+  if (type !== "invite_code" || !inviteCodeHash || !requesterUserId) return [];
+  return [
+    env.DB.prepare(
+      `UPDATE social_group_invites
+       SET uses = CASE WHEN uses > 0 THEN uses - 1 ELSE 0 END, updated_at = ?
+       WHERE invite_code_hash = ?
+         AND EXISTS (
+           SELECT 1 FROM social_group_invite_redemptions
+           WHERE invite_code_hash = ? AND user_id = ?
+         )`,
+    ).bind(now, inviteCodeHash, inviteCodeHash, requesterUserId),
+    env.DB.prepare(
+      "DELETE FROM social_group_invite_redemptions WHERE invite_code_hash = ? AND user_id = ?",
+    ).bind(inviteCodeHash, requesterUserId),
+  ];
+}
+
+function socialGroupJoinRequestFromRow(row: Record<string, unknown>) {
+  return {
+    requestId: String(row.requestId),
+    groupId: String(row.groupId),
+    groupName: String(row.groupName),
+    groupIconEmoji: typeof row.groupIconEmoji === "string" ? row.groupIconEmoji : undefined,
+    type: normalizeSocialGroupJoinRequestType(row.type) ?? "invite_code",
+    status: normalizeSocialGroupJoinRequestStatus(row.status) ?? "pending",
+    role: normalizeSocialGroupRole(row.role) === "officer" ? "officer" : "member",
+    requesterUserId: String(row.requesterUserId),
+    requesterUsername: String(row.requesterUsername),
+    requesterAvatarUrl: typeof row.requesterAvatarUrl === "string" ? row.requesterAvatarUrl : undefined,
+    invitedByUserId: typeof row.invitedByUserId === "string" ? row.invitedByUserId : undefined,
+    invitedByUsername: typeof row.invitedByUsername === "string" ? row.invitedByUsername : undefined,
+    invitedByAvatarUrl: typeof row.invitedByAvatarUrl === "string" ? row.invitedByAvatarUrl : undefined,
+    createdAt: typeof row.createdAt === "string" ? row.createdAt : undefined,
+    updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : undefined,
+    expiresAt: typeof row.expiresAt === "string" ? row.expiresAt : undefined,
+  };
+}
+
+async function socialProfilePrivacyForUser(userId: string, env: Env): Promise<SocialProfilePrivacy> {
+  const row = await env.DB.prepare(
+    `SELECT profile_visibility AS profileVisibility, show_level AS showLevel,
+            show_token_total AS showTokenTotal, show_active_days AS showActiveDays,
+            show_achievements AS showAchievements, updated_at AS updatedAt
+     FROM social_profile_privacy WHERE user_id = ?`,
+  ).bind(userId).first<Record<string, unknown>>();
+  return socialProfilePrivacyFromRow(row);
+}
+
+function socialProfilePrivacyFromRow(row: Record<string, unknown> | null | undefined): SocialProfilePrivacy {
+  return {
+    profileVisibility: normalizeSocialProfileVisibility(row?.profileVisibility) ?? "relations",
+    showLevel: row?.showLevel === undefined ? true : numberOrZero(row.showLevel) > 0,
+    showTokenTotal: row?.showTokenTotal === undefined ? true : numberOrZero(row.showTokenTotal) > 0,
+    showActiveDays: row?.showActiveDays === undefined ? true : numberOrZero(row.showActiveDays) > 0,
+    showAchievements: row?.showAchievements === undefined ? true : numberOrZero(row.showAchievements) > 0,
+    updatedAt: typeof row?.updatedAt === "string" ? row.updatedAt : undefined,
+  };
+}
+
+function normalizeSocialProfileVisibility(value: unknown): SocialProfileVisibility | undefined {
+  return value === "relations" || value === "friends" || value === "private" ? value : undefined;
+}
+
+function levelForProfileTokens(totalXp: number) {
+  let level = 1;
+  let remaining = Math.max(0, Math.round(totalXp));
+  let needed = Math.round(PROFILE_LEVEL_BASE * level ** PROFILE_LEVEL_EXPONENT);
+  while (remaining >= needed && level < PROFILE_MAX_LEVEL) {
+    remaining -= needed;
+    level += 1;
+    needed = Math.round(PROFILE_LEVEL_BASE * level ** PROFILE_LEVEL_EXPONENT);
+  }
+  return level;
+}
+
+async function usageTotalsForUser(userId: string, env: Env): Promise<UsageTotals> {
+  await ensureUsageTotalsTable(env);
+  const row = await env.DB.prepare(
+    `WITH daily_totals AS (
+       SELECT user_id, COALESCE(SUM(xp), 0) AS tokens,
+              COALESCE(SUM(CASE WHEN xp > 0 THEN 1 ELSE 0 END), 0) AS daysActive
+       FROM daily_usage
+       WHERE user_id = ?
+       GROUP BY user_id
+     )
+     SELECT COALESCE(t.tokens, d.tokens, 0) AS tokens,
+            COALESCE(t.days_active, d.daysActive, 0) AS daysActive
+     FROM (SELECT ? AS user_id) base
+     LEFT JOIN usage_totals t ON t.user_id = base.user_id
+     LEFT JOIN daily_totals d ON d.user_id = base.user_id`,
+  ).bind(userId, userId).first<{ tokens?: number; daysActive?: number }>();
+  return {
+    tokens: numberOrZero(row?.tokens),
+    daysActive: normalizeActiveDays(row?.daysActive) ?? 0,
+  };
+}
+
 function socialGroupSummaryFromRow(row: Record<string, unknown>) {
   const group: SocialGroupRow = {
     groupId: String(row.groupId),
@@ -1737,30 +2320,61 @@ function normalizeSocialFriendStatus(value: unknown): SocialFriendStatus | undef
 async function socialGroupLeaderboardDataForRange(
   groupId: string,
   range: LeaderboardRange,
+  basis: SocialGroupLeaderboardBasis,
   requestUser: SessionUser,
   env: Env,
   updatedAt: string,
 ) {
   let result: D1Result<Record<string, unknown>>;
+  const sinceJoin = basis === "since_join";
+  const dailyJoinedAtFilter = sinceJoin ? " AND d.date >= date(m.joined_at)" : "";
+  const hourlyJoinedAtFilter = sinceJoin ? " AND h.hour_start_utc >= date(m.joined_at)" : "";
+  const allDaysJoinedAtFilter = sinceJoin ? " AND all_days.date >= date(m.joined_at)" : "";
   if (range === "all") {
-    // Group boards rank by contribution SINCE JOINING, not lifetime: the floor at
-    // date(m.joined_at) makes this a guild-war metric and keeps a member's pre-join
-    // history out of every group they join. daysActive is floored the same way.
-    result = await env.DB.prepare(
-      `SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
-              m.role, SUM(d.xp) AS tokens,
-              (SELECT COUNT(*) FROM daily_usage all_days
-               WHERE all_days.user_id = u.user_id AND all_days.xp > 0
-                 AND all_days.date >= date(m.joined_at)) AS daysActive
-       FROM social_group_members m
-       JOIN users u ON u.user_id = m.user_id
-       JOIN daily_usage d ON d.user_id = m.user_id AND d.date >= date(m.joined_at)
-       WHERE m.group_id = ? AND m.share_usage > 0
-       GROUP BY u.user_id
-       HAVING tokens > 0
-       ORDER BY tokens DESC
-       LIMIT 100`,
-    ).bind(groupId).all<Record<string, unknown>>();
+    // Group boards are private-scope leaderboards: membership and share_usage gate
+    // visibility. Total uses the compact lifetime aggregate; since_join uses
+    // dated rows so it can apply the membership floor.
+    if (!sinceJoin) {
+      await ensureUsageTotalsTable(env);
+      result = await env.DB.prepare(
+        `WITH daily_totals AS (
+           SELECT user_id, COALESCE(SUM(xp), 0) AS tokens,
+                  COALESCE(SUM(CASE WHEN xp > 0 THEN 1 ELSE 0 END), 0) AS daysActive
+           FROM daily_usage
+           GROUP BY user_id
+         ),
+         combined_totals AS (
+           SELECT user_id, tokens, days_active AS daysActive FROM usage_totals
+           UNION ALL
+           SELECT d.user_id, d.tokens, d.daysActive
+           FROM daily_totals d
+           WHERE NOT EXISTS (SELECT 1 FROM usage_totals t WHERE t.user_id = d.user_id)
+         )
+         SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
+                m.role, c.tokens AS tokens, c.daysActive AS daysActive
+         FROM social_group_members m
+         JOIN combined_totals c ON c.user_id = m.user_id
+         JOIN users u ON u.user_id = m.user_id
+         WHERE m.group_id = ? AND m.share_usage > 0 AND c.tokens > 0
+         ORDER BY c.tokens DESC
+         LIMIT 100`,
+      ).bind(groupId).all<Record<string, unknown>>();
+    } else {
+      result = await env.DB.prepare(
+        `SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
+                m.role, SUM(d.xp) AS tokens,
+                (SELECT COUNT(*) FROM daily_usage all_days
+                 WHERE all_days.user_id = u.user_id AND all_days.xp > 0${allDaysJoinedAtFilter}) AS daysActive
+         FROM social_group_members m
+         JOIN users u ON u.user_id = m.user_id
+         JOIN daily_usage d ON d.user_id = m.user_id${dailyJoinedAtFilter}
+         WHERE m.group_id = ? AND m.share_usage > 0
+         GROUP BY u.user_id
+         HAVING tokens > 0
+         ORDER BY tokens DESC
+         LIMIT 100`,
+      ).bind(groupId).all<Record<string, unknown>>();
+    }
   } else if (range === "24h") {
     const hourWindow = rollingLeaderboardHourWindow(new Date());
     const currentWindow = currentLocalDateWindow(new Date());
@@ -1775,7 +2389,7 @@ async function socialGroupLeaderboardDataForRange(
          JOIN social_group_members m ON m.user_id = h.user_id
          WHERE m.group_id = ? AND m.share_usage > 0
            AND h.hour_start_utc >= ? AND h.hour_start_utc <= ?
-           AND h.hour_start_utc >= date(m.joined_at)
+           ${hourlyJoinedAtFilter}
          GROUP BY h.user_id
        ),
        legacy_current_date AS (
@@ -1786,7 +2400,7 @@ async function socialGroupLeaderboardDataForRange(
          WHERE m.group_id = ? AND m.share_usage > 0
            AND h.user_id IS NULL
            AND d.date >= ? AND d.date <= ?
-           AND d.date >= date(m.joined_at)
+           ${dailyJoinedAtFilter}
            AND d.updated_at >= ?
          GROUP BY d.user_id
        ),
@@ -1804,8 +2418,7 @@ async function socialGroupLeaderboardDataForRange(
        SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
               m.role, SUM(r.tokens) AS tokens,
               (SELECT COUNT(*) FROM daily_usage all_days
-               WHERE all_days.user_id = u.user_id AND all_days.xp > 0
-                 AND all_days.date >= date(m.joined_at)) AS daysActive
+               WHERE all_days.user_id = u.user_id AND all_days.xp > 0${allDaysJoinedAtFilter}) AS daysActive
        FROM range_totals r
        JOIN social_group_members m ON m.user_id = r.user_id AND m.group_id = ?
        JOIN users u ON u.user_id = r.user_id
@@ -1826,30 +2439,20 @@ async function socialGroupLeaderboardDataForRange(
   } else {
     const currentWindow = currentLocalDateWindow(new Date());
     result = await env.DB.prepare(
-      `WITH user_current_date AS (
-         SELECT d.user_id, MAX(d.date) AS currentDate
-         FROM daily_usage d
-         JOIN social_group_members m ON m.user_id = d.user_id
-         WHERE m.group_id = ? AND m.share_usage > 0
-           AND d.date >= ? AND d.date <= ?
-         GROUP BY d.user_id
-       )
-       SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
+      `SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
               m.role, SUM(d.xp) AS tokens,
               (SELECT COUNT(*) FROM daily_usage all_days
-               WHERE all_days.user_id = u.user_id AND all_days.xp > 0
-                 AND all_days.date >= date(m.joined_at)) AS daysActive
-       FROM user_current_date c
-       JOIN daily_usage d ON d.user_id = c.user_id
-       JOIN social_group_members m ON m.user_id = c.user_id AND m.group_id = ?
-       JOIN users u ON u.user_id = c.user_id
-       WHERE d.date >= date(c.currentDate, ?) AND d.date <= c.currentDate
-         AND d.date >= date(m.joined_at)
+               WHERE all_days.user_id = u.user_id AND all_days.xp > 0${allDaysJoinedAtFilter}) AS daysActive
+       FROM social_group_members m
+       JOIN daily_usage d ON d.user_id = m.user_id${dailyJoinedAtFilter}
+       JOIN users u ON u.user_id = m.user_id
+       WHERE m.group_id = ? AND m.share_usage > 0
+         AND d.date >= date(?, ?) AND d.date <= ?
        GROUP BY u.user_id
        HAVING tokens > 0
        ORDER BY tokens DESC
        LIMIT 100`,
-    ).bind(groupId, currentWindow.earliest, currentWindow.latest, groupId, rangeDateModifier(range)).all<Record<string, unknown>>();
+    ).bind(groupId, currentWindow.latest, rangeDateModifier(range), currentWindow.latest).all<Record<string, unknown>>();
   }
 
   const entries = (result.results || []).map((row, index) => ({
@@ -1865,6 +2468,7 @@ async function socialGroupLeaderboardDataForRange(
   return {
     groupId,
     range,
+    basis,
     entries,
     updatedAt,
     me: entries.find((entry) => entry.userId === requestUser.userId),
@@ -2125,6 +2729,11 @@ function optionalNumber(value: unknown) {
   return normalizeTokenCount(value);
 }
 
+function normalizeActiveDays(value: unknown) {
+  const number = Math.round(Number(value));
+  return Number.isFinite(number) && number >= 0 && number <= 100_000 ? number : undefined;
+}
+
 function normalizeDailyUsageRows(
   days: Array<{ date?: string; tokens?: number; xp?: number }>,
   window: { earliest: string; latest: string },
@@ -2232,6 +2841,7 @@ async function getLeaderboard(request: Request, env: Env) {
   await ensureUsagePreferencesTable(env);
   await ensureHourlyUsageTable(env);
   await ensureUsageVisibilityTable(env);
+  await ensureUsageTotalsTable(env);
   const url = new URL(request.url);
   const rawRange = url.searchParams.get("range");
   const range = normalizeRange(url.searchParams.get("range"));
@@ -2244,6 +2854,7 @@ async function getLeaderboards(request: Request, env: Env) {
   await ensureUsagePreferencesTable(env);
   await ensureHourlyUsageTable(env);
   await ensureUsageVisibilityTable(env);
+  await ensureUsageTotalsTable(env);
   const requestUser = await optionalAuth(request, env);
   const updatedAt = new Date().toISOString();
   const pairs = await Promise.all(
@@ -2286,9 +2897,22 @@ async function leaderboardDataForRange(
   let result: D1Result<Record<string, unknown>>;
   if (range === "all") {
     result = await env.DB.prepare(
-      `SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
-         SUM(d.xp) AS tokens,
-         (SELECT COUNT(*) FROM daily_usage all_days WHERE all_days.user_id = u.user_id AND all_days.xp > 0) AS daysActive,
+      `WITH daily_totals AS (
+         SELECT user_id, COALESCE(SUM(xp), 0) AS tokens,
+                COALESCE(SUM(CASE WHEN xp > 0 THEN 1 ELSE 0 END), 0) AS daysActive
+         FROM daily_usage
+         GROUP BY user_id
+       ),
+       combined_totals AS (
+         SELECT user_id, tokens, days_active AS daysActive FROM usage_totals
+         UNION ALL
+         SELECT d.user_id, d.tokens, d.daysActive
+         FROM daily_totals d
+         WHERE NOT EXISTS (SELECT 1 FROM usage_totals t WHERE t.user_id = d.user_id)
+       )
+       SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
+         c.tokens AS tokens,
+         c.daysActive AS daysActive,
          p.favorite_agent_label AS favoriteAgentLabel,
          p.favorite_agent_percent AS favoriteAgentPercent,
          p.favorite_model AS favoriteModel,
@@ -2297,14 +2921,12 @@ async function leaderboardDataForRange(
          p.favorite_period_end AS favoritePeriodEnd,
          p.peak_tokens_per_minute AS peakTokensPerMinute,
          p.updated_at AS preferenceUpdatedAt
-       FROM daily_usage d
-       JOIN users u ON u.user_id = d.user_id
+       FROM combined_totals c
+       JOIN users u ON u.user_id = c.user_id
        LEFT JOIN usage_preferences p ON p.user_id = u.user_id AND p.range = ?
        LEFT JOIN usage_visibility v ON v.user_id = u.user_id
-       WHERE COALESCE(v.public_global, 1) = 1
-       GROUP BY u.user_id
-       HAVING tokens > 0
-       ORDER BY tokens DESC
+       WHERE COALESCE(v.public_global, 1) = 1 AND c.tokens > 0
+       ORDER BY c.tokens DESC
        LIMIT 100`,
     ).bind(range).all<Record<string, unknown>>();
   } else if (range === "24h") {
@@ -2372,13 +2994,7 @@ async function leaderboardDataForRange(
   } else {
     const currentWindow = currentLocalDateWindow(new Date());
     result = await env.DB.prepare(
-      `WITH user_current_date AS (
-         SELECT user_id, MAX(date) AS currentDate
-         FROM daily_usage
-         WHERE date >= ? AND date <= ?
-         GROUP BY user_id
-       )
-       SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
+      `SELECT u.user_id AS userId, u.username AS username, u.avatar_url AS avatarUrl,
          SUM(d.xp) AS tokens,
          (SELECT COUNT(*) FROM daily_usage all_days WHERE all_days.user_id = u.user_id AND all_days.xp > 0) AS daysActive,
          p.favorite_agent_label AS favoriteAgentLabel,
@@ -2389,18 +3005,17 @@ async function leaderboardDataForRange(
          p.favorite_period_end AS favoritePeriodEnd,
          p.peak_tokens_per_minute AS peakTokensPerMinute,
          p.updated_at AS preferenceUpdatedAt
-       FROM user_current_date c
-       JOIN daily_usage d ON d.user_id = c.user_id
+       FROM daily_usage d
        JOIN users u ON u.user_id = d.user_id
        LEFT JOIN usage_preferences p ON p.user_id = u.user_id AND p.range = ?
        LEFT JOIN usage_visibility v ON v.user_id = u.user_id
-       WHERE d.date >= date(c.currentDate, ?) AND d.date <= c.currentDate
+       WHERE d.date >= date(?, ?) AND d.date <= ?
          AND COALESCE(v.public_global, 1) = 1
        GROUP BY u.user_id
        HAVING tokens > 0
        ORDER BY tokens DESC
        LIMIT 100`,
-    ).bind(currentWindow.earliest, currentWindow.latest, range, rangeDateModifier(range)).all<Record<string, unknown>>();
+    ).bind(range, currentWindow.latest, rangeDateModifier(range), currentWindow.latest).all<Record<string, unknown>>();
   }
   const entries = (result.results || []).map((row, index) => ({
     rank: index + 1,
@@ -2634,6 +3249,10 @@ function normalizeRange(value: string | null): LeaderboardRange {
   return value === "30d" || value === "all" ? value : "7d";
 }
 
+function normalizeSocialGroupLeaderboardBasis(value: string | null): SocialGroupLeaderboardBasis {
+  return value === "since_join" || value === "joined" ? "since_join" : "total";
+}
+
 function normalizePreferenceRange(value: unknown): LeaderboardRange | undefined {
   if (value === "today" || value === "24h") return "24h";
   return value === "7d" || value === "30d" || value === "all" ? value : undefined;
@@ -2647,6 +3266,16 @@ function normalizePreferencePeriod(value: unknown): UsagePreferencePeriod | unde
 
 function normalizeSocialGroupRole(value: unknown): SocialGroupRole | undefined {
   return value === "leader" || value === "officer" || value === "member" ? value : undefined;
+}
+
+function normalizeSocialGroupJoinRequestType(value: unknown): SocialGroupJoinRequestType | undefined {
+  return value === "invite_code" || value === "friend_invite" ? value : undefined;
+}
+
+function normalizeSocialGroupJoinRequestStatus(value: unknown): SocialGroupJoinRequestStatus | undefined {
+  return value === "pending" || value === "approved" || value === "declined" || value === "cancelled"
+    ? value
+    : undefined;
 }
 
 function normalizeSocialGroupVisibility(value: unknown): SocialGroupVisibility | undefined {

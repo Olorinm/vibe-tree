@@ -62,11 +62,13 @@ Remote tree existence is true when the account has any tree events, achievements
 - `POST /api/social/groups/:groupId/invites` creates a shareable invite code for group owners.
 - `DELETE /api/social/groups/:groupId/members/me` leaves a group. Owners cannot leave until ownership transfer or deletion exists.
 - `POST /api/social/groups/:groupId/membership` updates the current member's per-group usage sharing flag.
-- `GET /api/social/groups/:groupId/leaderboard?range=24h|7d|30d|all` returns members ranked by contribution since their join date.
+- `GET /api/social/groups/:groupId/leaderboard?range=24h|7d|30d|all&basis=total|since_join` returns a private-scope member leaderboard. Membership plus `share_usage` controls visibility; `basis=total` is lifetime/range total, while `basis=since_join` counts only usage after the member joined the group.
 - `POST /api/social/invites/:code/accept` joins a group by invite code.
+- `GET /api/social/profile-privacy` returns the signed-in user's profile card visibility settings.
+- `POST /api/social/profile-privacy` updates who can open the user's profile card and which growth fields are exposed to non-self viewers.
 - `GET /api/social/users/:userId/profile` returns a relationship-gated profile card for the signed-in user, an accepted friend, or a co-member.
 
-Social leaderboards use the same aggregate daily/hourly token rows as the global leaderboard. Joining a group can sync those aggregates without making the user visible on the global leaderboard; prompts, sessions, files, paths, and source text are still never uploaded.
+Social leaderboards use the same aggregate daily/hourly token rows as the global leaderboard. Joining a group can sync those aggregates without making the user visible on the global leaderboard; profile cards also enforce per-field privacy server-side. Prompts, sessions, files, paths, and source text are still never uploaded.
 
 ## Setup
 
@@ -115,10 +117,12 @@ Social leaderboards use the same aggregate daily/hourly token rows as the global
    npm run db:migrate:social-friends
    npm run db:migrate:usage-visibility
    npm run db:migrate:social-invite-redemptions
+   npm run db:migrate:social-profile-privacy
+   npm run db:migrate:usage-totals
    npm run deploy
    ```
 
-   For a fresh database, `db:migrate` creates all current tables. The extra migration scripts are safe to run for upgraded deployments that may already contain older cloud-tree tables, old source rows, missing hourly leaderboard rows, missing `tree_device_stats` device contribution totals, missing social tables, missing global-visibility rows, or missing invite redemption tracking.
+   For a fresh database, `db:migrate` creates all current tables. The extra migration scripts are safe to run for upgraded deployments that may already contain older cloud-tree tables, old source rows, missing hourly leaderboard rows, missing `tree_device_stats` device contribution totals, missing social tables, missing global-visibility rows, missing invite redemption tracking, missing profile privacy settings, or missing compact lifetime usage totals.
 
 5. Start the desktop app with the Worker URL, or set this as the production default in the Electron app.
 

@@ -13,6 +13,8 @@ const token = "verify-worker-token";
 const tokenHash = createHash("sha256").update(token).digest("hex");
 const friendToken = "verify-friend-token";
 const friendTokenHash = createHash("sha256").update(friendToken).digest("hex");
+const palToken = "verify-pal-token";
+const palTokenHash = createHash("sha256").update(palToken).digest("hex");
 const strangerToken = "verify-stranger-token";
 const strangerTokenHash = createHash("sha256").update(strangerToken).digest("hex");
 const now = "2026-05-27T00:00:00.000Z";
@@ -32,6 +34,9 @@ INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, create
 VALUES ('user-friend', 'friend-user', NULL, NULL, '${now}', '${now}');
 
 INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, created_at, updated_at)
+VALUES ('user-pal', 'pal-user', NULL, NULL, '${now}', '${now}');
+
+INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, created_at, updated_at)
 VALUES ('user-stranger', 'stranger-user', NULL, NULL, '${now}', '${now}');
 
 INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
@@ -39,6 +44,9 @@ VALUES ('${tokenHash}', 'user-verify', '${now}', '${expiresAt}');
 
 INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
 VALUES ('${friendTokenHash}', 'user-friend', '${now}', '${expiresAt}');
+
+INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
+VALUES ('${palTokenHash}', 'user-pal', '${now}', '${expiresAt}');
 
 INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
 VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
@@ -237,7 +245,8 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
   assert(typeof deltaTree.cursor === "string" && deltaTree.cursor > fullTreeCursor, "delta cloud tree should advance the cursor");
   assert(deltaTree.entries?.length === 1 && deltaTree.entries[0].id === "mac-event-2", "delta cloud tree should only return events changed after the cursor");
   assert(deltaTree.achievements?.length === 1 && deltaTree.achievements[0].id === "branch", "delta cloud tree should only return achievements changed after the cursor");
-  assert(deltaTree.devicesFull === true && deltaTree.modelStatsFull === true, "delta cloud tree should include full device and model aggregate snapshots");
+  assert(deltaTree.devicesFull === true, "delta cloud tree should keep device snapshots backward-compatible");
+  assert(deltaTree.modelStatsFull === false, "delta cloud tree should only include changed model aggregate snapshots");
   assert(deltaTree.devices?.find((item) => item.deviceId === "mac-device")?.tokens === 1334, "delta cloud tree should use cached per-device totals");
   assert(deltaTree.modelStats?.find((item) => item.model === "private-model")?.tokens === 1334, "delta cloud tree should include the latest aggregate model totals");
   await assertRejects(
@@ -337,17 +346,62 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
     method: "POST",
     body: { maxUses: 2 },
   });
-  assert(typeof invite.invite?.code === "string", "group invite should return a one-time visible invite code");
+  assert(typeof invite.invite?.code === "string", "group invite should return a visible invite code");
 
-  const joined = await requestJson(`/api/social/invites/${encodeURIComponent(invite.invite.code)}/accept`, {
+  const joinRequest = await requestJson(`/api/social/invites/${encodeURIComponent(invite.invite.code)}/accept`, {
     method: "POST",
     token: friendToken,
   });
-  assert(joined.group?.memberCount === 2, "group invite should add the second member");
-  assert(joined.group?.members?.some((member) => member.userId === "user-friend"), "joined group should list the new member");
+  assert(joinRequest.request?.status === "pending", "invite code should create a pending join request");
+  assert(joinRequest.request?.type === "invite_code", "invite-code joins should require group approval");
+  const friendPendingRequests = await requestJson(`/api/social/groups/${encodeURIComponent(groupId)}/requests`);
+  assert(
+    friendPendingRequests.requests?.some((request) => request.requesterUserId === "user-friend"),
+    "group managers should see invite-code join requests",
+  );
+  const approvedJoin = await requestJson(
+    `/api/social/groups/${encodeURIComponent(groupId)}/requests/${encodeURIComponent(joinRequest.request.requestId)}/approve`,
+    { method: "POST" },
+  );
+  assert(approvedJoin.group?.memberCount === 2, "approving a join request should add the second member");
+  assert(
+    approvedJoin.group?.members?.some((member) => member.userId === "user-friend"),
+    "approved group should list the new member",
+  );
 
   const friendGroups = await requestJson("/api/social/groups", { token: friendToken });
   assert(friendGroups.groups?.[0]?.groupId === groupId, "joined member should see the group in their group list");
+
+  await requestJson("/api/social/friends", {
+    method: "POST",
+    body: { username: "pal-user" },
+  });
+  await requestJson("/api/social/friends/user-verify/accept", {
+    method: "POST",
+    token: palToken,
+  });
+  const palInvite = await requestJson(`/api/social/groups/${encodeURIComponent(groupId)}/friend-invites`, {
+    method: "POST",
+    body: { userId: "user-pal" },
+  });
+  assert(palInvite.request?.type === "friend_invite", "friend invite should create an incoming invite for the friend");
+  const palInbox = await requestJson("/api/social/group-requests", { token: palToken });
+  assert(
+    palInbox.incomingInvites?.some((request) => request.requestId === palInvite.request.requestId),
+    "invited friends should see pending group invites",
+  );
+  const palAccepted = await requestJson(
+    `/api/social/group-requests/${encodeURIComponent(palInvite.request.requestId)}/accept`,
+    { method: "POST", token: palToken },
+  );
+  assert(
+    palAccepted.group?.members?.some((member) => member.userId === "user-pal"),
+    "accepting a friend invite should add the invited friend",
+  );
+  await requestJson(`/api/social/groups/${encodeURIComponent(groupId)}/members/me`, {
+    method: "DELETE",
+    token: palToken,
+  });
 
   await requestJson("/api/usage/daily", {
     method: "POST",
@@ -365,18 +419,22 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
   assert(groupLeaderboard.entries?.[0]?.tokens === 3333, "group leaderboard should rank the highest member first");
   assert(groupLeaderboard.entries?.[1]?.tokens === 777, "group leaderboard should include the invited member contribution");
 
-  // (g) group boards count contribution SINCE JOINING: a member's pre-join usage history
-  // stays out of the group board but still counts toward their own global all-time total.
-  // user-friend joined today; backdate a 9999-token day before the join.
-  const beforeJoinDate = addDays(utcToday, -5);
+  // (g) group boards expose both product modes: internal lifetime totals for
+  // friends/company rankings and since-joining contribution for guild-style play.
+  // user-friend joined today; put 9999 historical tokens outside the daily
+  // upload window so total mode must use usage_totals, not daily_usage.
+  const beforeJoinDate = addDays(utcToday, -60);
   await requestJson("/api/usage/daily", {
     method: "POST",
     token: friendToken,
     body: {
       appVersion: "0.5.5-test",
       forceSync: true,
+      totalTokens: 10776,
+      totalXp: 10776,
+      totalDaysActive: 2,
+      firstUsageDate: beforeJoinDate,
       days: [
-        { date: beforeJoinDate, tokens: 9999 },
         { date: eastOfUtcToday, tokens: 777 },
       ],
     },
@@ -384,14 +442,22 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
   const groupAllBoard = await requestJson(`/api/social/groups/${encodeURIComponent(groupId)}/leaderboard?range=all`);
   const friendGroupAll = groupAllBoard.entries?.find((entry) => entry.userId === "user-friend");
   assert(
-    friendGroupAll?.tokens === 777,
-    "group all-time board should exclude a member's pre-join usage (since-joined contribution only)",
+    friendGroupAll?.tokens === 10776,
+    "group all-time board should include shared historical usage for internal rankings",
+  );
+  const groupSinceJoinBoard = await requestJson(
+    `/api/social/groups/${encodeURIComponent(groupId)}/leaderboard?range=all&basis=since_join`,
+  );
+  const friendGroupSinceJoin = groupSinceJoinBoard.entries?.find((entry) => entry.userId === "user-friend");
+  assert(
+    friendGroupSinceJoin?.tokens === 777,
+    "group since-joining board should exclude pre-join usage for contribution rankings",
   );
   const globalAllBoard = await requestJson("/api/leaderboard?range=all");
   const friendGlobalAll = globalAllBoard.entries?.find((entry) => entry.userId === "user-friend");
   assert(
     friendGlobalAll?.tokens === 10776,
-    "global all-time total should still include the member's pre-join usage (777 + 9999)",
+    "global all-time total should include the same historical usage while public",
   );
 
   // (d) share_usage=false hides a member from the group board; restoring it shows them again.
@@ -446,6 +512,21 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
     groupAfterPrivate.entries?.some((entry) => entry.userId === "user-friend"),
     "non-public member should still appear on the group board",
   );
+  await requestJson(`/api/social/groups/${encodeURIComponent(groupId)}/membership`, {
+    method: "POST",
+    token: friendToken,
+    body: { shareUsage: false },
+  });
+  const redactedNoShareProfile = await requestJson("/api/social/users/user-friend/profile");
+  assert(
+    redactedNoShareProfile.profile?.usageVisible === false,
+    "turning off group sharing should hide private usage from co-members' profile views",
+  );
+  await requestJson(`/api/social/groups/${encodeURIComponent(groupId)}/membership`, {
+    method: "POST",
+    token: friendToken,
+    body: { shareUsage: true },
+  });
 
   // (e) profile cards: relationship-gated access + usage-consent honoring.
   // user-verify and user-friend are co-members (not friends); user-verify is public-global,
@@ -475,6 +556,69 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
     sharingMemberView.profile?.usageVisible === true,
     "a member sharing usage in a shared group should expose usage to a co-member",
   );
+  assert(
+    sharingMemberView.profile?.totalTokens === 10776,
+    "profile token total should use lifetime usage totals instead of the rolling daily window",
+  );
+
+  const friendPrivacyDefault = await requestJson("/api/social/profile-privacy", { token: friendToken });
+  assert(
+    friendPrivacyDefault.privacy?.profileVisibility === "relations",
+    "profile privacy should default to friends-and-groups visibility",
+  );
+  await requestJson("/api/social/profile-privacy", {
+    method: "POST",
+    token: friendToken,
+    body: {
+      profileVisibility: "relations",
+      showLevel: true,
+      showTokenTotal: false,
+      showActiveDays: false,
+      showAchievements: false,
+    },
+  });
+  const redactedMemberView = await requestJson("/api/social/users/user-friend/profile");
+  assert(redactedMemberView.profile?.usageVisible === true, "one visible field should keep growth data visible");
+  assert(typeof redactedMemberView.profile?.level === "number", "visible level should be returned");
+  assert(
+    !("totalTokens" in (redactedMemberView.profile ?? {})),
+    "hidden token total should not be returned by the profile API",
+  );
+  assert(
+    !("daysActive" in (redactedMemberView.profile ?? {})),
+    "hidden active days should not be returned by the profile API",
+  );
+  assert(
+    !("achievements" in (redactedMemberView.profile ?? {})),
+    "hidden achievements should not be returned by the profile API",
+  );
+
+  await requestJson("/api/social/profile-privacy", {
+    method: "POST",
+    token: friendToken,
+    body: {
+      profileVisibility: "private",
+      showLevel: true,
+      showTokenTotal: true,
+      showActiveDays: true,
+      showAchievements: true,
+    },
+  });
+  await assertRejects(
+    () => requestJson("/api/social/users/user-friend/profile"),
+    "a private profile should not be openable by a co-member",
+  );
+  await requestJson("/api/social/profile-privacy", {
+    method: "POST",
+    token: friendToken,
+    body: {
+      profileVisibility: "relations",
+      showLevel: true,
+      showTokenTotal: true,
+      showActiveDays: true,
+      showAchievements: true,
+    },
+  });
 
   // A stranger with no friendship and no shared group cannot even open the card (404, existence hidden).
   await assertRejects(
@@ -546,9 +690,14 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
     method: "POST",
     token: strangerToken,
   });
+  assert(strangerJoin.request?.status === "pending", "single-use invite should reserve a pending request");
+  const strangerApproved = await requestJson(
+    `/api/social/groups/${encodeURIComponent(groupId)}/requests/${encodeURIComponent(strangerJoin.request.requestId)}/approve`,
+    { method: "POST" },
+  );
   assert(
-    strangerJoin.group?.members?.some((member) => member.userId === "user-stranger"),
-    "single-use invite should admit the first accepter",
+    strangerApproved.group?.members?.some((member) => member.userId === "user-stranger"),
+    "approving the single-use request should admit the first requester",
   );
   await requestJson(`/api/social/groups/${encodeURIComponent(groupId)}/members/me`, {
     method: "DELETE",
@@ -563,7 +712,7 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
     "an exhausted single-use invite must not be reusable after the use is claimed",
   );
 
-  console.log("Worker API verified: device-only cloud trees, tree sync privacy, delta cloud tree sync, achievement privacy, 24h leaderboard buckets, social friends, social groups/invites/group leaderboard, group/global decoupling (private members, leave-keeps-group-data, leave-group, share toggle), relationship-gated profile cards (self/co-member/sharing/stranger), atomic invite maxUses, legacy fallback, and leaderboard leave safety passed.");
+  console.log("Worker API verified: device-only cloud trees, tree sync privacy, delta cloud tree sync, achievement privacy, 24h leaderboard buckets, social friends, social groups/invite-code approval/friend invites/group leaderboard with internal totals and since-joining contribution, group/global decoupling (private members, leave-keeps-group-data, leave-group, share toggle), relationship-gated profile cards (self/co-member/sharing/stranger), atomic invite maxUses, legacy fallback, and leaderboard leave safety passed.");
 } finally {
   if (devProcess) await terminate(devProcess);
   rmSync(persistDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });

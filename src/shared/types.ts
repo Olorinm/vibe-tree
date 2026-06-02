@@ -20,6 +20,7 @@ export type AppLanguage = "zh-CN" | "en-US";
 export type UiTheme = "day" | "night" | "soft";
 
 export type LeaderboardRange = "24h" | "7d" | "30d" | "all";
+export type SocialGroupLeaderboardBasis = "total" | "since_join";
 
 export interface LeaderboardProfile {
   id: string;
@@ -120,6 +121,18 @@ export interface LeaderboardCollection {
 export type SocialGroupRole = "leader" | "officer" | "member";
 export type SocialGroupVisibility = "invite" | "closed";
 export type SocialFriendStatus = "pending" | "accepted";
+export type SocialGroupJoinRequestType = "invite_code" | "friend_invite";
+export type SocialGroupJoinRequestStatus = "pending" | "approved" | "declined" | "cancelled";
+export type SocialProfileVisibility = "relations" | "friends" | "private";
+
+export interface SocialProfilePrivacy {
+  profileVisibility: SocialProfileVisibility;
+  showLevel: boolean;
+  showTokenTotal: boolean;
+  showActiveDays: boolean;
+  showAchievements: boolean;
+  updatedAt?: string;
+}
 
 export interface SocialFriend {
   userId: string;
@@ -174,6 +187,38 @@ export interface SocialGroupList {
   error?: string;
 }
 
+export interface SocialGroupJoinRequest {
+  requestId: string;
+  groupId: string;
+  groupName: string;
+  groupIconEmoji?: string;
+  type: SocialGroupJoinRequestType;
+  status: SocialGroupJoinRequestStatus;
+  role: Exclude<SocialGroupRole, "leader">;
+  requesterUserId: string;
+  requesterUsername: string;
+  requesterAvatarUrl?: string;
+  invitedByUserId?: string;
+  invitedByUsername?: string;
+  invitedByAvatarUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  expiresAt?: string;
+}
+
+export interface SocialGroupRequestList {
+  incomingInvites: SocialGroupJoinRequest[];
+  outgoingRequests: SocialGroupJoinRequest[];
+  updatedAt?: string;
+  error?: string;
+}
+
+export interface SocialGroupModerationList {
+  requests: SocialGroupJoinRequest[];
+  updatedAt?: string;
+  error?: string;
+}
+
 export interface SocialProfileAchievement {
   id: string;
   unlockedAt?: string;
@@ -192,6 +237,11 @@ export interface SocialProfile {
   // When false, the viewer has no consent signal to see usage figures and the
   // fields below are omitted (identity-only card).
   usageVisible: boolean;
+  levelVisible?: boolean;
+  tokenTotalVisible?: boolean;
+  activeDaysVisible?: boolean;
+  achievementsVisible?: boolean;
+  level?: number;
   totalTokens?: number;
   daysActive?: number;
   achievements?: SocialProfileAchievement[];
@@ -215,6 +265,11 @@ export interface CreateSocialGroupInviteInput {
   expiresInDays?: number;
 }
 
+export interface CreateSocialGroupFriendInviteInput {
+  userId: string;
+  role?: Exclude<SocialGroupRole, "leader">;
+}
+
 export interface SocialGroupInvite {
   code: string;
   groupId: string;
@@ -232,6 +287,7 @@ export interface SocialGroupLeaderboardEntry extends LeaderboardEntry {
 export interface SocialGroupLeaderboardData {
   groupId: string;
   range: LeaderboardRange;
+  basis: SocialGroupLeaderboardBasis;
   entries: SocialGroupLeaderboardEntry[];
   updatedAt?: string;
   me?: SocialGroupLeaderboardEntry;

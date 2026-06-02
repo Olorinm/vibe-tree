@@ -80,7 +80,7 @@ export function appShellHtml(viewMode: ViewMode) {
 
           <article class="menubar-viz" data-viz="rank">
             <div class="menubar-viz-head">
-              <span class="menubar-viz-title" data-i18n="leaderboard">排行榜</span>
+              <span class="menubar-viz-title" data-i18n="menubarLeaderboard24h">24h 排行榜</span>
               <button class="menubar-action" id="menubarRankRefreshButton" type="button" data-i18n="refreshLeaderboard">刷新榜单</button>
             </div>
             <div class="menubar-rank-list" id="menubarRankList"></div>
@@ -297,7 +297,10 @@ export function appShellHtml(viewMode: ViewMode) {
               <p class="eyebrow" data-i18n="socialEyebrow">Guild hall</p>
               <h3 data-i18n="socialTitle">好友 / 群组</h3>
             </div>
-            <button class="secondary-button social-refresh-button" id="socialRefreshButton" type="button" data-i18n="socialRefresh">刷新</button>
+            <div class="social-header-actions">
+              <button class="secondary-button social-settings-button" id="socialSettingsButton" type="button" data-i18n="socialSettings">设置</button>
+              <button class="secondary-button social-refresh-button" id="socialRefreshButton" type="button" data-i18n="socialRefresh">刷新</button>
+            </div>
           </div>
           <div class="social-mode-tabs" id="socialModeTabs" role="tablist" aria-label="社交分类" data-i18n-aria="socialModeAria">
             <button type="button" data-social-panel="friends" data-i18n="socialPanelFriends">好友</button>
@@ -312,6 +315,7 @@ export function appShellHtml(viewMode: ViewMode) {
                 <button class="secondary-button" id="socialAddFriendButton" type="submit" data-i18n="socialAddFriendAction">添加</button>
               </div>
             </form>
+            <div class="social-group-inbox" id="socialGroupInbox"></div>
             <div class="social-friend-list" id="socialFriendList"></div>
           </div>
           <div class="social-panel social-groups-panel" id="socialGroupsPanel" hidden>
@@ -333,10 +337,54 @@ export function appShellHtml(viewMode: ViewMode) {
                     <button type="button" data-social-group-range="30d" data-i18n="leaderboard30d">30 天</button>
                     <button type="button" data-social-group-range="all" data-i18n="leaderboardAllTime">全部</button>
                   </div>
+                  <div class="leaderboard-range-tabs social-basis-tabs" id="socialGroupBasisTabs" role="tablist" aria-label="群组榜单口径" data-i18n-aria="socialGroupBasisAria">
+                    <button type="button" data-social-group-basis="total" data-i18n="socialGroupBasisTotal">总用量</button>
+                    <button type="button" data-social-group-basis="since_join" data-i18n="socialGroupBasisSinceJoin">入群后</button>
+                  </div>
+                  <div class="social-group-controls" id="socialGroupControls" aria-label="群组操作" data-i18n-aria="socialGroupControlsAria"></div>
                 </div>
-                <p class="social-board-note" data-i18n="socialGroupContributionNote">群组榜按加入日期统计贡献，加入日期之前的历史不计入。</p>
+                <p class="social-board-note" data-i18n="socialGroupContributionNote">可切换总用量 / 入群后贡献；时间范围用 24h / 7 天 / 30 天 / 全部控制。</p>
                 <div class="leaderboard-rows social-leaderboard-rows" id="socialGroupLeaderboardRows"></div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="social-settings-modal" id="socialSettingsModal" aria-hidden="true" hidden>
+          <div class="social-settings-backdrop" id="socialSettingsBackdrop"></div>
+          <div class="social-settings-panel" role="dialog" aria-modal="true" aria-labelledby="socialSettingsTitle">
+            <header>
+              <p class="eyebrow" data-i18n="socialEyebrow">Guild hall</p>
+              <h3 id="socialSettingsTitle" data-i18n="socialSettingsTitle">社交设置</h3>
+              <button class="icon-button" id="socialSettingsCloseButton" type="button" aria-label="关闭设置" data-i18n-aria="closeSettings">×</button>
+            </header>
+            <p class="social-settings-intro" data-i18n="socialSettingsHint">管理资料卡展示范围。每个群的排行榜共享仍在群组详情里单独控制。</p>
+            <div class="social-profile-privacy-settings" id="socialProfilePrivacySettings">
+              <label class="scale-select">
+                <span data-i18n="socialProfileVisibilityLabel">谁可以打开资料卡</span>
+                <select id="socialProfileVisibilitySelect">
+                  <option value="relations" data-i18n="socialProfileVisibilityRelations">好友和同群成员</option>
+                  <option value="friends" data-i18n="socialProfileVisibilityFriends">仅好友</option>
+                  <option value="private" data-i18n="socialProfileVisibilityPrivate">仅自己</option>
+                </select>
+              </label>
+              <label class="toggle-row">
+                <input id="socialProfileShowLevelInput" type="checkbox" />
+                <span data-i18n="socialProfileShowLevel">展示等级和阶段</span>
+              </label>
+              <label class="toggle-row">
+                <input id="socialProfileShowTokenTotalInput" type="checkbox" />
+                <span data-i18n="socialProfileShowTokenTotal">展示累计 Token</span>
+              </label>
+              <label class="toggle-row">
+                <input id="socialProfileShowActiveDaysInput" type="checkbox" />
+                <span data-i18n="socialProfileShowActiveDays">展示活跃天数</span>
+              </label>
+              <label class="toggle-row">
+                <input id="socialProfileShowAchievementsInput" type="checkbox" />
+                <span data-i18n="socialProfileShowAchievements">展示成就陈列</span>
+              </label>
+              <div class="leaderboard-status" id="socialProfilePrivacyStatus"></div>
             </div>
           </div>
         </section>
@@ -368,8 +416,16 @@ export function appShellHtml(viewMode: ViewMode) {
               <section class="social-mini-form social-invite-manager" id="socialInviteManager" hidden>
                 <div class="social-mini-form-label" data-i18n="socialInviteManager">当前群组邀请</div>
                 <div class="social-invite-manager-summary" id="socialInviteGroupSummary"></div>
+                <form class="social-mini-form social-friend-invite-form" id="socialGroupFriendInviteForm">
+                  <label for="socialGroupFriendInviteSelect" data-i18n="socialInviteFriend">邀请好友入群</label>
+                  <div class="social-input-row">
+                    <select id="socialGroupFriendInviteSelect"></select>
+                    <button class="secondary-button" id="socialGroupFriendInviteButton" type="submit" data-i18n="socialInviteFriendAction">邀请</button>
+                  </div>
+                </form>
                 <button class="secondary-button social-invite-button" id="socialCreateInviteButton" type="button" data-i18n="socialCreateInvite">生成邀请</button>
                 <div class="social-invite-output" id="socialInviteOutput"></div>
+                <div class="social-group-request-list" id="socialGroupRequestList"></div>
               </section>
             </div>
           </div>

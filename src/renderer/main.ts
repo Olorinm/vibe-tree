@@ -14,9 +14,12 @@ import type {
   SocialFriend,
   SocialGroup,
   SocialGroupInvite,
+  SocialGroupJoinRequest,
+  SocialGroupLeaderboardBasis,
   SocialGroupLeaderboardData,
   SocialGroupRole,
   SocialProfile,
+  SocialProfilePrivacy,
   TreeAsset,
   UiTheme,
   UpdateStatus,
@@ -168,6 +171,10 @@ let leaderboardStatus: LeaderboardStatus = {
   joined: false,
   syncing: false,
 };
+let socialProfilePrivacy: SocialProfilePrivacy | null = null;
+let socialProfilePrivacyLoading = false;
+let socialProfilePrivacyMessage = "";
+let socialProfilePrivacyError = "";
 let cloudSyncStatus: CloudSyncStatus = {
   configured: false,
   authenticated: false,
@@ -189,6 +196,9 @@ let socialFriends: SocialFriend[] = [];
 let socialFriendsUpdatedAt: string | undefined;
 let socialGroups: SocialGroup[] = [];
 let socialGroupsUpdatedAt: string | undefined;
+let socialIncomingGroupInvites: SocialGroupJoinRequest[] = [];
+let socialOutgoingGroupRequests: SocialGroupJoinRequest[] = [];
+let socialGroupJoinRequests: SocialGroupJoinRequest[] = [];
 let socialSelectedGroupId: string | null = null;
 let socialLoading = false;
 let socialError = "";
@@ -196,6 +206,7 @@ let socialNotice = "";
 let socialInvite: SocialGroupInvite | null = null;
 let socialInviteCopiedAt = 0;
 let socialGroupRange: LeaderboardRange = "24h";
+let socialGroupBasis: SocialGroupLeaderboardBasis = "total";
 let socialGroupLeaderboard: SocialGroupLeaderboardData | null = null;
 let socialGroupLeaderboardLoading = false;
 const socialGroupLeaderboardCache = new Map<string, SocialGroupLeaderboardData>();
@@ -395,11 +406,22 @@ const leaderboardStatusText = document.querySelector<HTMLElement>("#leaderboardS
 const leaderboardUserCard = document.querySelector<HTMLElement>("#leaderboardUserCard");
 const leaderboardAutoSyncInput = document.querySelector<HTMLInputElement>("#leaderboardAutoSyncInput");
 const leaderboardPreferencesPublicInput = document.querySelector<HTMLInputElement>("#leaderboardPreferencesPublicInput");
+const socialProfilePrivacySettings = document.querySelector<HTMLElement>("#socialProfilePrivacySettings");
+const socialProfileVisibilitySelect = document.querySelector<HTMLSelectElement>("#socialProfileVisibilitySelect");
+const socialProfileShowLevelInput = document.querySelector<HTMLInputElement>("#socialProfileShowLevelInput");
+const socialProfileShowTokenTotalInput = document.querySelector<HTMLInputElement>("#socialProfileShowTokenTotalInput");
+const socialProfileShowActiveDaysInput = document.querySelector<HTMLInputElement>("#socialProfileShowActiveDaysInput");
+const socialProfileShowAchievementsInput = document.querySelector<HTMLInputElement>("#socialProfileShowAchievementsInput");
+const socialProfilePrivacyStatus = document.querySelector<HTMLElement>("#socialProfilePrivacyStatus");
 const leaderboardPageRefreshButton = document.querySelector<HTMLButtonElement>("#leaderboardPageRefreshButton");
 const leaderboardPageSyncButton = document.querySelector<HTMLButtonElement>("#leaderboardPageSyncButton");
 const leaderboardRangeTabs = document.querySelector<HTMLElement>("#leaderboardRangeTabs");
 const leaderboardSummary = document.querySelector<HTMLElement>("#leaderboardSummary");
 const leaderboardRows = document.querySelector<HTMLElement>("#leaderboardRows");
+const socialSettingsButton = document.querySelector<HTMLButtonElement>("#socialSettingsButton");
+const socialSettingsModal = document.querySelector<HTMLElement>("#socialSettingsModal");
+const socialSettingsBackdrop = document.querySelector<HTMLElement>("#socialSettingsBackdrop");
+const socialSettingsCloseButton = document.querySelector<HTMLButtonElement>("#socialSettingsCloseButton");
 const socialRefreshButton = document.querySelector<HTMLButtonElement>("#socialRefreshButton");
 const socialModeTabs = document.querySelector<HTMLElement>("#socialModeTabs");
 const socialFriendsPanel = document.querySelector<HTMLElement>("#socialFriendsPanel");
@@ -411,6 +433,7 @@ const socialGroupActionsCloseButton = document.querySelector<HTMLButtonElement>(
 const socialGroupDetailPanel = document.querySelector<HTMLElement>("#socialGroupDetailPanel");
 const socialAddFriendForm = document.querySelector<HTMLFormElement>("#socialAddFriendForm");
 const socialFriendUsernameInput = document.querySelector<HTMLInputElement>("#socialFriendUsernameInput");
+const socialGroupInbox = document.querySelector<HTMLElement>("#socialGroupInbox");
 const socialFriendList = document.querySelector<HTMLElement>("#socialFriendList");
 const socialCreateGroupForm = document.querySelector<HTMLFormElement>("#socialCreateGroupForm");
 const socialGroupNameInput = document.querySelector<HTMLInputElement>("#socialGroupNameInput");
@@ -420,10 +443,15 @@ const socialSummary = document.querySelector<HTMLElement>("#socialSummary");
 const socialGroupList = document.querySelector<HTMLElement>("#socialGroupList");
 const socialGroupDetail = document.querySelector<HTMLElement>("#socialGroupDetail");
 const socialGroupRangeTabs = document.querySelector<HTMLElement>("#socialGroupRangeTabs");
+const socialGroupBasisTabs = document.querySelector<HTMLElement>("#socialGroupBasisTabs");
+const socialGroupControls = document.querySelector<HTMLElement>("#socialGroupControls");
 const socialInviteManager = document.querySelector<HTMLElement>("#socialInviteManager");
 const socialInviteGroupSummary = document.querySelector<HTMLElement>("#socialInviteGroupSummary");
+const socialGroupFriendInviteForm = document.querySelector<HTMLFormElement>("#socialGroupFriendInviteForm");
+const socialGroupFriendInviteSelect = document.querySelector<HTMLSelectElement>("#socialGroupFriendInviteSelect");
 const socialCreateInviteButton = document.querySelector<HTMLButtonElement>("#socialCreateInviteButton");
 const socialInviteOutput = document.querySelector<HTMLElement>("#socialInviteOutput");
+const socialGroupRequestList = document.querySelector<HTMLElement>("#socialGroupRequestList");
 const socialGroupLeaderboardRows = document.querySelector<HTMLElement>("#socialGroupLeaderboardRows");
 const socialProfileModal = document.querySelector<HTMLElement>("#socialProfileModal");
 const socialProfileBackdrop = document.querySelector<HTMLElement>("#socialProfileBackdrop");
@@ -680,8 +708,9 @@ function bindMenubarEvents() {
     if (!menubarDragState || menubarDragState.pointerId !== event.pointerId) return;
     const dx = event.clientX - menubarDragState.startX;
     const dy = event.clientY - menubarDragState.startY;
-    if (Math.abs(dx) > 42 && Math.abs(dx) > Math.abs(dy) * 1.15) {
-      setMenubarViz(menubarVizIndex + (dx < 0 ? 1 : -1));
+    if (Math.abs(dx) > 52 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      pageMenubarViz(dx < 0 ? 1 : -1);
+      lockMenubarWheel();
     }
     clearMenubarDrag();
   });
@@ -696,12 +725,11 @@ function bindMenubarEvents() {
       // Inside a scrollable list, vertical scroll wins — only page on a near-pure horizontal swipe.
       if ((event.target as HTMLElement).closest(MENUBAR_SCROLLABLE_SELECTOR) && horizontal <= vertical * 2.5) return;
       event.preventDefault();
-      if (menubarWheelLocked) return;
-      setMenubarViz(menubarVizIndex + (event.deltaX > 0 ? 1 : -1));
-      menubarWheelLocked = true;
-      window.setTimeout(() => {
-        menubarWheelLocked = false;
-      }, 360);
+      if (menubarWheelLocked) {
+        lockMenubarWheel();
+        return;
+      }
+      if (pageMenubarViz(event.deltaX > 0 ? 1 : -1)) lockMenubarWheel();
     },
     { passive: false },
   );
@@ -740,6 +768,23 @@ function bindMenubarEvents() {
 function clearMenubarDrag() {
   menubarDragState = null;
   menubarSlot?.classList.remove("is-dragging");
+}
+
+function pageMenubarViz(direction: 1 | -1) {
+  const now = Date.now();
+  if (now - menubarLastPageGestureAt < MENUBAR_PAGE_GESTURE_COOLDOWN_MS) return false;
+  menubarLastPageGestureAt = now;
+  setMenubarViz(menubarVizIndex + direction);
+  return true;
+}
+
+function lockMenubarWheel() {
+  menubarWheelLocked = true;
+  if (menubarWheelUnlockTimer !== null) window.clearTimeout(menubarWheelUnlockTimer);
+  menubarWheelUnlockTimer = window.setTimeout(() => {
+    menubarWheelLocked = false;
+    menubarWheelUnlockTimer = null;
+  }, MENUBAR_PAGE_GESTURE_COOLDOWN_MS);
 }
 
 function rendererPlatform() {
@@ -795,6 +840,7 @@ function applyI18n() {
   });
   renderUpdateStatus();
   renderLeaderboardSettings();
+  renderSocialProfilePrivacySettings();
   renderLeaderboard();
 }
 
@@ -980,11 +1026,18 @@ async function boot() {
     renderUpdateStatus();
   });
   window.bonsai.onLeaderboardStatus((nextStatus) => {
+    const previousProfileId = leaderboardStatus.profile?.id;
     leaderboardStatus = nextStatus;
+    if (!nextStatus.authenticated || nextStatus.profile?.id !== previousProfileId) {
+      socialProfilePrivacy = null;
+      socialProfilePrivacyError = "";
+      socialProfilePrivacyMessage = "";
+    }
     if (viewMode === "menubar") {
       scheduleMenubarRender();
     } else {
       renderLeaderboardSettings();
+      renderSocialProfilePrivacySettings();
       renderLeaderboard();
     }
   });
@@ -1147,6 +1200,18 @@ function bindEvents() {
     setSettingsOpen(false);
   });
 
+  socialSettingsButton?.addEventListener("click", () => {
+    setSocialSettingsOpen(true);
+  });
+
+  socialSettingsCloseButton?.addEventListener("click", () => {
+    setSocialSettingsOpen(false);
+  });
+
+  socialSettingsBackdrop?.addEventListener("click", () => {
+    setSocialSettingsOpen(false);
+  });
+
   socialGroupManageButton?.addEventListener("click", () => {
     setSocialGroupActionsOpen(true);
   });
@@ -1181,6 +1246,7 @@ function bindEvents() {
         closeSocialProfile();
         return;
       }
+      setSocialSettingsOpen(false);
       setSettingsOpen(false);
       setSocialGroupActionsOpen(false);
     }
@@ -1381,6 +1447,28 @@ function bindEvents() {
     if (leaderboardStatus.joined) void syncLeaderboard({ force: true });
   });
 
+  socialProfileVisibilitySelect?.addEventListener("change", () => {
+    void updateSocialProfilePrivacy({
+      profileVisibility: normalizeSocialProfileVisibility(socialProfileVisibilitySelect.value),
+    });
+  });
+
+  socialProfileShowLevelInput?.addEventListener("change", () => {
+    void updateSocialProfilePrivacy({ showLevel: socialProfileShowLevelInput.checked });
+  });
+
+  socialProfileShowTokenTotalInput?.addEventListener("change", () => {
+    void updateSocialProfilePrivacy({ showTokenTotal: socialProfileShowTokenTotalInput.checked });
+  });
+
+  socialProfileShowActiveDaysInput?.addEventListener("change", () => {
+    void updateSocialProfilePrivacy({ showActiveDays: socialProfileShowActiveDaysInput.checked });
+  });
+
+  socialProfileShowAchievementsInput?.addEventListener("change", () => {
+    void updateSocialProfilePrivacy({ showAchievements: socialProfileShowAchievementsInput.checked });
+  });
+
   leaderboardPageRefreshButton?.addEventListener("click", () => {
     void refreshLeaderboard({ syncFirst: leaderboardStatus.joined, forceSync: true, forceFetch: true });
   });
@@ -1470,7 +1558,10 @@ function bindEvents() {
     const nextTab = button.dataset.dashboardTab as DashboardTab | undefined;
     if (!nextTab || nextTab === dashboardTab) return;
     dashboardTab = nextTab;
-    if (dashboardTab !== "social") setSocialGroupActionsOpen(false);
+    if (dashboardTab !== "social") {
+      setSocialSettingsOpen(false);
+      setSocialGroupActionsOpen(false);
+    }
     renderDashboardTabs();
     if (dashboardTab === "leaderboard") {
       ensureLeaderboardLoaded();
@@ -1514,7 +1605,7 @@ function bindEvents() {
     socialRenderKey = "";
     renderSocial();
     if (socialPanel === "groups" && socialSelectedGroupId && !socialGroupLeaderboard) {
-      socialGroupLeaderboard = cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange);
+      socialGroupLeaderboard = cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange, socialGroupBasis);
       socialRenderKey = "";
       renderSocial();
       if (!socialGroupLeaderboard) void refreshSocialGroupLeaderboard();
@@ -1545,6 +1636,18 @@ function bindEvents() {
     }
   });
 
+  socialGroupInbox?.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-social-group-inbox-action]");
+    if (!button) return;
+    const requestId = button.dataset.socialGroupRequestId;
+    if (!requestId) return;
+    if (button.dataset.socialGroupInboxAction === "accept") {
+      void acceptIncomingSocialGroupInvite(requestId);
+    } else if (button.dataset.socialGroupInboxAction === "decline") {
+      void declineIncomingSocialGroupInvite(requestId);
+    }
+  });
+
   socialCreateGroupForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     void createSocialGroupFromInput();
@@ -1562,13 +1665,15 @@ function bindEvents() {
     if (!nextGroupId || nextGroupId === socialSelectedGroupId) return;
     socialSelectedGroupId = nextGroupId;
     clearSocialInvite();
-    socialGroupLeaderboard = cachedSocialGroupLeaderboard(nextGroupId, socialGroupRange);
+    socialGroupLeaderboard = cachedSocialGroupLeaderboard(nextGroupId, socialGroupRange, socialGroupBasis);
+    socialGroupJoinRequests = [];
     socialRenderKey = "";
     renderSocial();
     if (!socialGroupLeaderboard) void refreshSocialGroupLeaderboard();
+    void refreshSelectedSocialGroupRequests();
   });
 
-  socialGroupDetail?.addEventListener("click", (event) => {
+  socialGroupDetailPanel?.addEventListener("click", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-social-group-action]");
     if (!button) return;
     const groupId = button.dataset.groupId;
@@ -1602,7 +1707,21 @@ function bindEvents() {
     if (nextRange === socialGroupRange) return;
     socialGroupRange = nextRange;
     socialGroupLeaderboard = socialSelectedGroupId
-      ? cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange)
+      ? cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange, socialGroupBasis)
+      : null;
+    socialRenderKey = "";
+    renderSocial();
+    if (!socialGroupLeaderboard) void refreshSocialGroupLeaderboard();
+  });
+
+  socialGroupBasisTabs?.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-social-group-basis]");
+    if (!button) return;
+    const nextBasis = normalizeSocialGroupBasis(button.dataset.socialGroupBasis);
+    if (nextBasis === socialGroupBasis) return;
+    socialGroupBasis = nextBasis;
+    socialGroupLeaderboard = socialSelectedGroupId
+      ? cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange, socialGroupBasis)
       : null;
     socialRenderKey = "";
     renderSocial();
@@ -1611,6 +1730,23 @@ function bindEvents() {
 
   socialCreateInviteButton?.addEventListener("click", () => {
     void createOrCopySocialInviteForSelectedGroup();
+  });
+
+  socialGroupFriendInviteForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void inviteFriendToSelectedSocialGroup();
+  });
+
+  socialGroupRequestList?.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-social-group-request-action]");
+    if (!button) return;
+    const requestId = button.dataset.socialGroupRequestId;
+    if (!requestId) return;
+    if (button.dataset.socialGroupRequestAction === "approve") {
+      void approveSelectedSocialGroupRequest(requestId);
+    } else if (button.dataset.socialGroupRequestAction === "decline") {
+      void declineSelectedSocialGroupRequest(requestId);
+    }
   });
 
   achievementCategoryTabs?.addEventListener("click", (event) => {
@@ -1793,7 +1929,7 @@ async function refreshLeaderboardIfVisible() {
 }
 
 async function runLeaderboardSync(options: { force?: boolean } = {}) {
-  if (!leaderboardStatus.configured || !leaderboardStatus.joined) {
+  if (!leaderboardStatus.configured || !leaderboardStatus.authenticated) {
     renderLeaderboardSettings();
     return false;
   }
@@ -1828,6 +1964,9 @@ async function refreshSocial(options: { syncFirst?: boolean } = {}) {
     if (!leaderboardStatus.configured || !leaderboardStatus.authenticated) {
       socialFriends = [];
       socialGroups = [];
+      socialIncomingGroupInvites = [];
+      socialOutgoingGroupRequests = [];
+      socialGroupJoinRequests = [];
       socialFriendsUpdatedAt = undefined;
       socialGroupsUpdatedAt = undefined;
       socialSelectedGroupId = null;
@@ -1835,25 +1974,32 @@ async function refreshSocial(options: { syncFirst?: boolean } = {}) {
       socialError = "";
       return;
     }
-    if (options.syncFirst && leaderboardStatus.joined) {
+    if (options.syncFirst) {
       await runLeaderboardSync({ force: true });
     }
-    const [friendList, groupList] = await Promise.all([
+    const [friendList, groupList, requestList] = await Promise.all([
       window.bonsai.getSocialFriends(),
       window.bonsai.getSocialGroups(),
+      window.bonsai.getMySocialGroupRequests(),
     ]);
     socialFriends = friendList.friends;
     socialFriendsUpdatedAt = friendList.updatedAt;
     socialGroups = groupList.groups;
     socialGroupsUpdatedAt = groupList.updatedAt;
-    socialError = friendList.error ?? groupList.error ?? "";
+    socialIncomingGroupInvites = requestList.incomingInvites;
+    socialOutgoingGroupRequests = requestList.outgoingRequests;
+    socialError = friendList.error ?? groupList.error ?? requestList.error ?? "";
     if (!socialSelectedGroupId || !socialGroups.some((group) => group.groupId === socialSelectedGroupId)) {
       socialSelectedGroupId = socialGroups[0]?.groupId ?? null;
     }
     if (!socialSelectedGroupId) {
       socialGroupLeaderboard = null;
-    } else if (socialGroupLeaderboard?.groupId !== socialSelectedGroupId) {
-      socialGroupLeaderboard = cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange);
+    } else if (
+      socialGroupLeaderboard?.groupId !== socialSelectedGroupId ||
+      socialGroupLeaderboard?.range !== socialGroupRange ||
+      socialGroupLeaderboard?.basis !== socialGroupBasis
+    ) {
+      socialGroupLeaderboard = cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange, socialGroupBasis);
     }
   } catch (error) {
     socialError = error instanceof Error ? error.message : t("socialGroupsLoadFailed");
@@ -1863,7 +2009,11 @@ async function refreshSocial(options: { syncFirst?: boolean } = {}) {
     renderLeaderboardSettings();
     renderSocial();
   }
-  if (socialSelectedGroupId && (options.syncFirst || !cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange))) {
+  await refreshSelectedSocialGroupRequests();
+  if (
+    socialSelectedGroupId &&
+    (options.syncFirst || !cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange, socialGroupBasis))
+  ) {
     await refreshSocialGroupLeaderboard({ force: options.syncFirst });
   }
 }
@@ -1874,7 +2024,7 @@ async function refreshSocialGroupLeaderboard(options: { force?: boolean } = {}) 
     renderSocial();
     return;
   }
-  const cached = cachedSocialGroupLeaderboard(groupId, socialGroupRange);
+  const cached = cachedSocialGroupLeaderboard(groupId, socialGroupRange, socialGroupBasis);
   if (cached && !options.force) {
     socialGroupLeaderboard = cached;
     socialError = cached.error ?? "";
@@ -1887,13 +2037,14 @@ async function refreshSocialGroupLeaderboard(options: { force?: boolean } = {}) 
   socialRenderKey = "";
   renderSocial();
   try {
-    socialGroupLeaderboard = await window.bonsai.getSocialGroupLeaderboard(groupId, socialGroupRange);
+    socialGroupLeaderboard = await window.bonsai.getSocialGroupLeaderboard(groupId, socialGroupRange, socialGroupBasis);
     cacheSocialGroupLeaderboard(socialGroupLeaderboard);
     socialError = socialGroupLeaderboard.error ?? "";
   } catch (error) {
     socialGroupLeaderboard = {
       groupId,
       range: socialGroupRange,
+      basis: socialGroupBasis,
       entries: [],
       error: error instanceof Error ? error.message : t("socialGroupLeaderboardLoadFailed"),
     };
@@ -1906,16 +2057,54 @@ async function refreshSocialGroupLeaderboard(options: { force?: boolean } = {}) 
   }
 }
 
-function socialGroupLeaderboardCacheKey(groupId: string, range: LeaderboardRange) {
-  return `${groupId}:${range}`;
+async function refreshSelectedSocialGroupRequests() {
+  const group = selectedSocialGroup();
+  if (!group || (group.role !== "leader" && group.role !== "officer")) {
+    socialGroupJoinRequests = [];
+    socialRenderKey = "";
+    renderSocial();
+    return;
+  }
+  try {
+    const requestList = await window.bonsai.getSocialGroupRequests(group.groupId);
+    socialGroupJoinRequests = requestList.requests;
+    if (requestList.error) socialError = requestList.error;
+  } catch (error) {
+    socialError = error instanceof Error ? error.message : t("socialGroupRequestsLoadFailed");
+  } finally {
+    socialRenderKey = "";
+    renderSocial();
+  }
 }
 
-function cachedSocialGroupLeaderboard(groupId: string, range: LeaderboardRange) {
-  return socialGroupLeaderboardCache.get(socialGroupLeaderboardCacheKey(groupId, range)) ?? null;
+function socialGroupLeaderboardCacheKey(
+  groupId: string,
+  range: LeaderboardRange,
+  basis: SocialGroupLeaderboardBasis,
+) {
+  return `${groupId}:${range}:${basis}`;
+}
+
+function cachedSocialGroupLeaderboard(
+  groupId: string,
+  range: LeaderboardRange,
+  basis: SocialGroupLeaderboardBasis,
+) {
+  return socialGroupLeaderboardCache.get(socialGroupLeaderboardCacheKey(groupId, range, basis)) ?? null;
 }
 
 function cacheSocialGroupLeaderboard(board: SocialGroupLeaderboardData) {
-  socialGroupLeaderboardCache.set(socialGroupLeaderboardCacheKey(board.groupId, board.range), board);
+  socialGroupLeaderboardCache.set(socialGroupLeaderboardCacheKey(board.groupId, board.range, board.basis), board);
+}
+
+function clearSocialGroupLeaderboardCache(groupId: string) {
+  for (const key of socialGroupLeaderboardCache.keys()) {
+    if (key.startsWith(`${groupId}:`)) socialGroupLeaderboardCache.delete(key);
+  }
+}
+
+function normalizeSocialGroupBasis(value: unknown): SocialGroupLeaderboardBasis {
+  return value === "since_join" || value === "joined" ? "since_join" : "total";
 }
 
 async function requestSocialFriendFromInput() {
@@ -2027,14 +2216,11 @@ async function acceptSocialInviteFromInput() {
   clearSocialInvite();
   socialRenderKey = "";
   renderSocial();
-  let joined = false;
   try {
-    const group = await window.bonsai.acceptSocialGroupInvite(code);
+    const joinRequest = await window.bonsai.requestSocialGroupJoin(code);
     socialInviteCodeInput!.value = "";
-    upsertSocialGroup(group);
-    socialSelectedGroupId = group.groupId;
-    socialGroupLeaderboard = null;
-    joined = true;
+    upsertSocialGroupJoinRequest(joinRequest);
+    socialNotice = t("socialGroupRequestSubmitted");
   } catch (error) {
     socialError = error instanceof Error ? error.message : t("socialInviteAcceptFailed");
   } finally {
@@ -2042,8 +2228,7 @@ async function acceptSocialInviteFromInput() {
     socialRenderKey = "";
     renderSocial();
   }
-  if (joined) setSocialGroupActionsOpen(false);
-  if (socialSelectedGroupId) await refreshSocialGroupLeaderboard();
+  if (!socialError) setSocialGroupActionsOpen(false);
 }
 
 async function leaveSocialGroupRelationship(groupId: string) {
@@ -2062,11 +2247,11 @@ async function leaveSocialGroupRelationship(groupId: string) {
   try {
     await window.bonsai.leaveSocialGroup(groupId);
     socialGroups = socialGroups.filter((item) => item.groupId !== groupId);
-    socialGroupLeaderboardCache.delete(socialGroupLeaderboardCacheKey(groupId, socialGroupRange));
+    clearSocialGroupLeaderboardCache(groupId);
     if (socialSelectedGroupId === groupId) {
       socialSelectedGroupId = socialGroups[0]?.groupId ?? null;
       socialGroupLeaderboard = socialSelectedGroupId
-        ? cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange)
+        ? cachedSocialGroupLeaderboard(socialSelectedGroupId, socialGroupRange, socialGroupBasis)
         : null;
       clearSocialInvite();
     }
@@ -2090,6 +2275,7 @@ async function toggleSocialGroupShareUsage(groupId: string) {
   try {
     const updated = await window.bonsai.setSocialGroupShareUsage(groupId, group.shareUsage === false);
     upsertSocialGroup(updated);
+    clearSocialGroupLeaderboardCache(groupId);
   } catch (error) {
     socialError = error instanceof Error ? error.message : t("socialGroupShareToggleFailed");
   } finally {
@@ -2159,6 +2345,112 @@ async function createOrCopySocialInviteForSelectedGroup() {
   await createSocialInviteForSelectedGroup();
 }
 
+async function inviteFriendToSelectedSocialGroup() {
+  const group = selectedSocialGroup();
+  const userId = socialGroupFriendInviteSelect?.value ?? "";
+  if (!group || !userId) {
+    socialError = t("socialInviteFriendEmpty");
+    socialRenderKey = "";
+    renderSocial();
+    return;
+  }
+  socialLoading = true;
+  socialError = "";
+  socialRenderKey = "";
+  renderSocial();
+  try {
+    const joinRequest = await window.bonsai.createSocialGroupFriendInvite(group.groupId, { userId, role: "member" });
+    upsertSocialGroupJoinRequest(joinRequest);
+    socialNotice = t("socialGroupFriendInviteSent").replace("{name}", joinRequest.requesterUsername);
+  } catch (error) {
+    socialError = error instanceof Error ? error.message : t("socialGroupFriendInviteFailed");
+  } finally {
+    socialLoading = false;
+    socialRenderKey = "";
+    renderSocial();
+  }
+}
+
+async function acceptIncomingSocialGroupInvite(requestId: string) {
+  socialLoading = true;
+  socialError = "";
+  socialRenderKey = "";
+  renderSocial();
+  try {
+    const group = await window.bonsai.acceptSocialGroupFriendInvite(requestId);
+    removeSocialGroupJoinRequest(requestId);
+    upsertSocialGroup(group);
+    socialSelectedGroupId = group.groupId;
+    socialPanel = "groups";
+    socialGroupLeaderboard = null;
+  } catch (error) {
+    socialError = error instanceof Error ? error.message : t("socialGroupRequestUpdateFailed");
+  } finally {
+    socialLoading = false;
+    socialRenderKey = "";
+    renderSocial();
+  }
+  if (socialSelectedGroupId) await refreshSocialGroupLeaderboard({ force: true });
+}
+
+async function declineIncomingSocialGroupInvite(requestId: string) {
+  socialLoading = true;
+  socialError = "";
+  socialRenderKey = "";
+  renderSocial();
+  try {
+    await window.bonsai.declineSocialGroupFriendInvite(requestId);
+    removeSocialGroupJoinRequest(requestId);
+  } catch (error) {
+    socialError = error instanceof Error ? error.message : t("socialGroupRequestUpdateFailed");
+  } finally {
+    socialLoading = false;
+    socialRenderKey = "";
+    renderSocial();
+  }
+}
+
+async function approveSelectedSocialGroupRequest(requestId: string) {
+  const group = selectedSocialGroup();
+  if (!group) return;
+  socialLoading = true;
+  socialError = "";
+  socialRenderKey = "";
+  renderSocial();
+  try {
+    const updated = await window.bonsai.approveSocialGroupRequest(group.groupId, requestId);
+    removeSocialGroupJoinRequest(requestId);
+    upsertSocialGroup(updated);
+    clearSocialGroupLeaderboardCache(group.groupId);
+  } catch (error) {
+    socialError = error instanceof Error ? error.message : t("socialGroupRequestUpdateFailed");
+  } finally {
+    socialLoading = false;
+    socialRenderKey = "";
+    renderSocial();
+  }
+  await refreshSocialGroupLeaderboard({ force: true });
+}
+
+async function declineSelectedSocialGroupRequest(requestId: string) {
+  const group = selectedSocialGroup();
+  if (!group) return;
+  socialLoading = true;
+  socialError = "";
+  socialRenderKey = "";
+  renderSocial();
+  try {
+    await window.bonsai.declineSocialGroupRequest(group.groupId, requestId);
+    removeSocialGroupJoinRequest(requestId);
+  } catch (error) {
+    socialError = error instanceof Error ? error.message : t("socialGroupRequestUpdateFailed");
+  } finally {
+    socialLoading = false;
+    socialRenderKey = "";
+    renderSocial();
+  }
+}
+
 async function copyTextToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -2198,6 +2490,32 @@ function upsertSocialGroup(group: SocialGroup) {
   } else {
     socialGroups = [group, ...socialGroups];
   }
+  socialGroupsUpdatedAt = new Date().toISOString();
+}
+
+function upsertSocialGroupJoinRequest(request: SocialGroupJoinRequest) {
+  const update = (items: SocialGroupJoinRequest[]) => {
+    const index = items.findIndex((item) => item.requestId === request.requestId);
+    if (index >= 0) return items.map((item) => (item.requestId === request.requestId ? request : item));
+    return [request, ...items];
+  };
+  if (request.status !== "pending") {
+    removeSocialGroupJoinRequest(request.requestId);
+    return;
+  }
+  if (request.type === "friend_invite" && request.requesterUserId === leaderboardStatus.profile?.id) {
+    socialIncomingGroupInvites = update(socialIncomingGroupInvites);
+  } else if (request.type === "invite_code" && request.requesterUserId === leaderboardStatus.profile?.id) {
+    socialOutgoingGroupRequests = update(socialOutgoingGroupRequests);
+  } else if (request.groupId === socialSelectedGroupId) {
+    socialGroupJoinRequests = update(socialGroupJoinRequests);
+  }
+}
+
+function removeSocialGroupJoinRequest(requestId: string) {
+  socialIncomingGroupInvites = socialIncomingGroupInvites.filter((item) => item.requestId !== requestId);
+  socialOutgoingGroupRequests = socialOutgoingGroupRequests.filter((item) => item.requestId !== requestId);
+  socialGroupJoinRequests = socialGroupJoinRequests.filter((item) => item.requestId !== requestId);
 }
 
 function selectedSocialGroup() {
@@ -2345,6 +2663,19 @@ function setSettingsOpen(open: boolean) {
   settingsModal.setAttribute("aria-hidden", String(!open));
 }
 
+function setSocialSettingsOpen(open: boolean) {
+  if (!socialSettingsModal) return;
+  socialSettingsModal.hidden = !open;
+  socialSettingsModal.classList.toggle("open", open);
+  socialSettingsModal.setAttribute("aria-hidden", String(!open));
+  if (open) {
+    void ensureSocialProfilePrivacyLoaded();
+    window.setTimeout(() => {
+      (socialProfileVisibilitySelect ?? socialSettingsCloseButton)?.focus();
+    }, 0);
+  }
+}
+
 function setSocialGroupActionsOpen(open: boolean) {
   if (!socialGroupActionsModal) return;
   socialGroupActionsModal.hidden = !open;
@@ -2418,6 +2749,9 @@ function renderSocialProfile() {
     return;
   }
 
+  const joined = profile.joinedAt
+    ? `${t("socialProfileJoined")} ${new Date(profile.joinedAt).toLocaleDateString(languageLocale(), { year: "numeric", month: "long" })}`
+    : "";
   const relationLabel = profile.isSelf
     ? t("socialProfileRelationSelf")
     : profile.isFriend
@@ -2425,66 +2759,139 @@ function renderSocialProfile() {
       : profile.mutualGroupCount > 0
         ? t("socialProfileRelationGroup")
         : "";
-  const joined = profile.joinedAt
-    ? `${t("socialProfileJoined")} ${new Date(profile.joinedAt).toLocaleDateString(languageLocale(), { year: "numeric", month: "long" })}`
-    : "";
-
+  const relationChips = [
+    relationLabel,
+    profile.mutualGroupCount > 0 && !profile.isSelf ? `${formatNumber(profile.mutualGroupCount)} ${t("socialProfileMutualGroups")}` : "",
+    profile.usageVisible ? t("socialProfileUsageShared") : t("socialProfileUsagePrivate"),
+  ]
+    .filter(Boolean)
+    .map((label) => `<span>${escapeHtml(label)}</span>`)
+    .join("");
   const headerHtml = `
-    <div class="social-profile-identity">
-      ${leaderboardAvatar(profile.avatarUrl, profile.username)}
-      <div class="social-profile-identity-copy">
-        <strong>${escapeHtml(profile.username)}</strong>
-        ${relationLabel ? `<span class="social-profile-relation">${escapeHtml(relationLabel)}</span>` : ""}
-        ${joined ? `<span class="social-profile-joined">${escapeHtml(joined)}</span>` : ""}
+    <section class="social-profile-hero">
+      <div class="social-profile-hero-glow" aria-hidden="true"></div>
+      <div class="social-profile-identity">
+        ${leaderboardAvatar(profile.avatarUrl, profile.username)}
+        <div class="social-profile-identity-copy">
+          <span>${escapeHtml(t("socialProfilePlayerFile"))}</span>
+          <strong>${escapeHtml(profile.username)}</strong>
+          ${joined ? `<em>${escapeHtml(joined)}</em>` : ""}
+        </div>
       </div>
-    </div>
+      <div class="social-profile-chip-row">${relationChips}</div>
+    </section>
     <div class="social-profile-relations">
       <article><strong>${formatNumber(profile.friendCount)}</strong><span>${escapeHtml(t("socialProfileFriends"))}</span></article>
       <article><strong>${formatNumber(profile.groupCount)}</strong><span>${escapeHtml(t("socialProfileGroups"))}</span></article>
+      <article><strong>${formatNumber(profile.mutualGroupCount)}</strong><span>${escapeHtml(t("socialProfileMutualGroups"))}</span></article>
     </div>
   `;
 
   let bodyHtml = "";
-  if (profile.usageVisible) {
-    const balance = gameBalance ?? DEFAULT_GAME_BALANCE;
-    const progression = summarizeXpProgression(profile.totalTokens ?? 0, balance);
-    const progressPercent = Math.round(progression.progress * 100);
+  const balance = gameBalance ?? DEFAULT_GAME_BALANCE;
+  const tokenTotalVisible = profile.tokenTotalVisible !== false && profile.totalTokens !== undefined;
+  const activeDaysVisible = profile.activeDaysVisible !== false && profile.daysActive !== undefined;
+  const achievementsVisible = profile.achievementsVisible !== false && profile.achievements !== undefined;
+  const progression = tokenTotalVisible ? summarizeXpProgression(profile.totalTokens ?? 0, balance) : null;
+  const level = profile.level ?? progression?.level;
+  const levelVisible = profile.levelVisible !== false && level !== undefined;
+  const hasVisibleGrowthData = levelVisible || tokenTotalVisible || activeDaysVisible || achievementsVisible;
+
+  if (hasVisibleGrowthData) {
+    const totalTokens = profile.totalTokens ?? 0;
+    const daysActive = profile.daysActive ?? 0;
+    const averagePerDay = daysActive > 0 ? Math.round(totalTokens / daysActive) : 0;
+    const progressPercent = progression ? Math.round(progression.progress * 100) : 0;
+    const stage = progression
+      ? stageLabel(progression.stageId, progression.stageLabel)
+      : stageLabelForLevel(level ?? 1, balance);
+    const levelCard = levelVisible
+      ? `
+        <section class="social-profile-level-card">
+          <div class="social-profile-level-head">
+            <span>${escapeHtml(t("socialProfileLevel"))}</span>
+            <strong>Lv.${level}</strong>
+            <em>${escapeHtml(stage)}</em>
+          </div>
+          ${
+            progression
+              ? `
+                <div class="progress-track xp-track" aria-label="${escapeHtml(t("socialProfileLevel"))}">
+                  <span style="width:${progressPercent}%"></span>
+                </div>
+                <div class="social-profile-progress-copy">
+                  <span>${formatCompact(progression.levelXp)} / ${formatCompact(progression.nextLevelXp)} token</span>
+                  <strong>${progressPercent}%</strong>
+                </div>
+              `
+              : `<div class="social-profile-progress-copy muted"><span>${escapeHtml(t("socialProfileLevelProgressHidden"))}</span></div>`
+          }
+        </section>
+      `
+      : "";
+    const metricCards = [
+      tokenTotalVisible
+        ? `<article class="primary"><span>${escapeHtml(t("metricTotalTokens"))}</span><strong>${formatNumber(totalTokens)}</strong></article>`
+        : "",
+      activeDaysVisible
+        ? `<article><span>${escapeHtml(t("leaderboardDaysActive"))}</span><strong>${formatNumber(daysActive)}</strong></article>`
+        : "",
+      tokenTotalVisible && activeDaysVisible
+        ? `<article><span>${escapeHtml(t("socialProfileAveragePerDay"))}</span><strong>${formatCompact(averagePerDay)}</strong></article>`
+        : "",
+      achievementsVisible
+        ? `<article><span>${escapeHtml(t("memorialAchievements"))}</span><strong>${formatNumber(profile.achievements?.length ?? 0)}</strong></article>`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("");
     bodyHtml = `
-      <div class="social-profile-level">
-        <div class="social-profile-level-head">
-          <strong>Lv.${progression.level}</strong>
-          <span>${escapeHtml(progression.stageLabel)}</span>
-        </div>
-        <div class="progress-track xp-track"><span style="width:${progressPercent}%"></span></div>
-      </div>
-      <div class="social-profile-metrics">
-        <article><strong>${formatNumber(profile.totalTokens ?? 0)}</strong><span>${escapeHtml(t("metricTotalTokens"))}</span></article>
-        <article><strong>${formatNumber(profile.daysActive ?? 0)}</strong><span>${escapeHtml(t("leaderboardDaysActive"))}</span></article>
-      </div>
-      ${renderSocialProfileAchievements(profile.achievements ?? [])}
+      ${levelCard}
+      ${metricCards ? `<div class="social-profile-metrics">${metricCards}</div>` : ""}
+      ${achievementsVisible ? renderSocialProfileAchievements(profile.achievements ?? []) : ""}
     `;
   } else {
-    bodyHtml = `<div class="social-profile-private">${escapeHtml(t("socialProfileUsageHidden"))}</div>`;
+    bodyHtml = `
+      <div class="social-profile-private">
+        <strong>${escapeHtml(t("socialProfileUsagePrivate"))}</strong>
+        <span>${escapeHtml(t("socialProfileUsageHidden"))}</span>
+      </div>
+    `;
   }
 
   socialProfileBody.innerHTML = headerHtml + bodyHtml;
 }
 
+function stageLabelForLevel(level: number, balance: GameBalance) {
+  const stage =
+    balance.stages.reduce((current, candidate) => (level >= candidate.minLevel ? candidate : current), balance.stages[0]) ??
+    DEFAULT_GAME_BALANCE.stages[0];
+  return stageLabel(stage.id, stage.label);
+}
+
 function renderSocialProfileAchievements(achievements: SocialProfile["achievements"]) {
   const unlocked = achievements ?? [];
-  const heading = `<div class="social-profile-section-title"><strong>${escapeHtml(t("memorialAchievements"))}</strong><span>${unlocked.length}</span></div>`;
+  const heading = `<div class="social-profile-section-title"><strong>${escapeHtml(t("socialProfileShowcase"))}</strong><span>${formatNumber(unlocked.length)} ${escapeHtml(t("memorialAchievements"))}</span></div>`;
   if (!unlocked.length) {
     return `<section class="social-profile-achievements">${heading}<div class="social-profile-empty">${escapeHtml(t("socialProfileNoAchievements"))}</div></section>`;
   }
   const byId = new Map(unlocked.map((entry) => [entry.id, entry]));
   const defs = ACHIEVEMENTS.filter((def) => byId.has(def.id)).sort((a, b) => rarityOrder(a.rarity) - rarityOrder(b.rarity));
-  const badges = defs
+  const featured = defs.slice(0, 8);
+  const badges = featured
     .map((def) => {
       const copy = achievementText(def);
-      return `<span class="social-profile-badge rarity-${def.rarity}" title="${escapeHtml(copy.description)}">${escapeHtml(copy.name)}</span>`;
+      return `
+        <span class="social-profile-badge rarity-${def.rarity}" title="${escapeHtml(copy.description)}">
+          <strong>${escapeHtml(copy.name)}</strong>
+          <em>${escapeHtml(achievementRarityLabel(def.rarity))}</em>
+        </span>
+      `;
     })
     .join("");
-  return `<section class="social-profile-achievements">${heading}<div class="social-profile-badges">${badges}</div></section>`;
+  const moreCount = Math.max(0, defs.length - featured.length);
+  const more = moreCount > 0 ? `<span class="social-profile-badge more">${t("socialProfileMoreAchievements").replace("{count}", formatNumber(moreCount))}</span>` : "";
+  return `<section class="social-profile-achievements">${heading}<div class="social-profile-badges">${badges}${more}</div></section>`;
 }
 
 function isSettingsCategory(value: string | undefined): value is SettingsCategory {
@@ -3565,6 +3972,7 @@ function render() {
     renderCloudSyncSettings();
     renderTreeStartModal();
     renderLeaderboardSettings();
+    renderSocialProfilePrivacySettings();
     renderLeaderboard();
     if (historyFilter !== "all" && !visibility.visibleSet.has(historyFilter)) {
       historyFilter = "all";
@@ -3615,9 +4023,12 @@ function menubarVisibleIds(): MenubarVizId[] {
 }
 const MENUBAR_SCROLLABLE_SELECTOR = ".menubar-rank-list, .menubar-sync-list, .menubar-activity-list";
 const MENUBAR_LEADERBOARD_RANGE: LeaderboardRange = "24h";
+const MENUBAR_PAGE_GESTURE_COOLDOWN_MS = 620;
 let menubarVizIndex = 0;
 let menubarDragState: { pointerId: number; startX: number; startY: number } | null = null;
 let menubarWheelLocked = false;
+let menubarWheelUnlockTimer: number | null = null;
+let menubarLastPageGestureAt = 0;
 let menubarRenderHandle: number | null = null;
 
 // Usage pushes fire on every session-file change — frequent while coding. Collapse bursts into one
@@ -4102,31 +4513,26 @@ function renderMenubarSources(visibility: SourceVisibility) {
 }
 
 function renderMenubarSpeed(stats: Stats) {
-  const rate = stats.weather.tokensPerMinute;
+  const rateWindowSeconds = gameBalance?.weather.rateWindowSeconds ?? 60;
+  const trend = menubarRollingRateSnapshot(300, 10, rateWindowSeconds);
+  const samples = trend.samples;
+  const rate = samples[samples.length - 1] ?? stats.weather.tokensPerMinute;
   if (menubarSpeedMeta) {
     menubarSpeedMeta.textContent = `${t("menubarSpeedWindow1m")} · ${formatCompact(rate)}/min`;
   }
   if (menubarSpeedWindow) menubarSpeedWindow.textContent = t("menubarSpeedWindow5m");
-  if (menubarSpeedTotal) menubarSpeedTotal.textContent = `+${formatCompact(stats.lastFiveMinuteXp)}`;
+  if (menubarSpeedTotal) menubarSpeedTotal.textContent = `+${formatCompact(trend.windowTotal)}`;
   if (!menubarWave) return;
-  const width = 320;
-  const height = 82;
-  const padX = 4;
+  const waveBounds = menubarWave.getBoundingClientRect();
+  const width = Math.max(Math.round(waveBounds.width || 0), 320);
+  const height = Math.max(Math.round(waveBounds.height || 0), 82);
+  const padX = 14;
   const top = 8;
-  const bottom = 68;
-  const samples = menubarRecentRateBuckets(300, 30);
+  const bottom = height - 14;
   const max = Math.max(rate, ...samples, 1);
-  // Peak rate seen across the 5-minute window — a reference point for the
-  // current instantaneous reading. Hidden until it is meaningfully above now.
   if (menubarSpeedPeak) {
-    const peak = Math.max(0, ...samples);
-    if (peak > 0 && peak > rate * 1.15) {
-      menubarSpeedPeak.textContent = `${t("menubarSpeedPeak")} ${formatCompact(peak)}/min`;
-      menubarSpeedPeak.hidden = false;
-    } else {
-      menubarSpeedPeak.textContent = "";
-      menubarSpeedPeak.hidden = true;
-    }
+    menubarSpeedPeak.textContent = "";
+    menubarSpeedPeak.hidden = true;
   }
   const coords = samples.map((value, index) => {
     const x = padX + (index / (samples.length - 1)) * (width - padX * 2);
@@ -4150,8 +4556,9 @@ function renderMenubarSpeed(stats: Stats) {
     waveLen += Math.hypot(coords[index].x - coords[index - 1].x, coords[index].y - coords[index - 1].y);
   }
   waveLen = Math.max(waveLen, 1);
+  const markerStyle = `left: ${((lastPoint.x / width) * 100).toFixed(2)}%; top: ${((lastPoint.y / height) * 100).toFixed(2)}%;`;
   menubarWave.innerHTML = `
-    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+    <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
       <defs>
         <linearGradient id="menubarWaveGradient" x1="0" y1="${top}" x2="0" y2="${bottom}" gradientUnits="userSpaceOnUse">
           <stop offset="0" style="stop-color: var(--leaf); stop-opacity: ${rate > 0 ? "0.32" : "0.12"};" />
@@ -4164,26 +4571,42 @@ function renderMenubarSpeed(stats: Stats) {
       <path d="${linePath}" class="menubar-wave-line${rate > 0 ? " active" : ""}" fill="none" />
       <path d="${linePath}" class="menubar-wave-flow${rate > 0 ? " active" : ""}" style="stroke-dasharray: 30 ${waveLen.toFixed(1)}; --menubar-flow-from: ${(waveLen + 30).toFixed(1)};" />
       <line x1="${padX}" y1="${bottom}" x2="${width - padX}" y2="${bottom}" class="menubar-wave-base" />
-      <circle cx="${lastPoint.x.toFixed(1)}" cy="${lastPoint.y.toFixed(1)}" r="9" class="menubar-wave-halo${rate > 0 ? " active" : ""}" />
-      <circle cx="${lastPoint.x.toFixed(1)}" cy="${lastPoint.y.toFixed(1)}" r="4" class="menubar-wave-dot${rate > 0 ? " active" : ""}" />
     </svg>
+    <span class="menubar-wave-halo${rate > 0 ? " active" : ""}" style="${markerStyle}"></span>
+    <span class="menubar-wave-dot${rate > 0 ? " active" : ""}" style="${markerStyle}"></span>
   `;
 }
 
-function menubarRecentRateBuckets(windowSeconds: number, bucketSeconds: number) {
+function menubarRollingRateSnapshot(windowSeconds: number, stepSeconds: number, rateWindowSeconds: number) {
   const now = Date.now();
   const enabled = sourceVisibility().enabled;
-  const bucketCount = Math.max(1, Math.ceil(windowSeconds / bucketSeconds));
-  const buckets = Array.from({ length: bucketCount }, () => 0);
-  const start = now - windowSeconds * 1000;
+  const sampleCount = Math.max(2, Math.floor(windowSeconds / stepSeconds) + 1);
+  const stepMs = stepSeconds * 1000;
+  const end = Math.floor(now / stepMs) * stepMs;
+  const start = end - windowSeconds * 1000;
+  const rateWindowMs = rateWindowSeconds * 1000;
+  const entries: { createdAtMs: number; xp: number }[] = [];
+  let windowTotal = 0;
   for (const entry of ledger?.entries ?? []) {
     const createdAtMs = Date.parse(entry.createdAt);
     if (!Number.isFinite(createdAtMs)) continue;
-    if (createdAtMs < start || createdAtMs > now) continue;
-    const index = Math.min(bucketCount - 1, Math.max(0, Math.floor((createdAtMs - start) / (bucketSeconds * 1000))));
-    buckets[index] += xpForEntry(entry, enabled);
+    if (createdAtMs < start - rateWindowMs || createdAtMs > end) continue;
+    const xp = xpForEntry(entry, enabled);
+    if (xp <= 0) continue;
+    entries.push({ createdAtMs, xp });
+    if (createdAtMs > start) windowTotal += xp;
   }
-  return buckets.map((tokens) => (tokens / bucketSeconds) * 60);
+  const samples: number[] = [];
+  for (let index = 0; index < sampleCount; index += 1) {
+    const sampleAt = start + index * stepMs;
+    const sampleStart = sampleAt - rateWindowMs;
+    let total = 0;
+    for (const entry of entries) {
+      if (entry.createdAtMs > sampleStart && entry.createdAtMs <= sampleAt) total += entry.xp;
+    }
+    samples.push((total / rateWindowSeconds) * 60);
+  }
+  return { samples, windowTotal, end };
 }
 
 function renderDashboardTabs() {
@@ -5346,6 +5769,124 @@ function cloudSyncStatusCopy() {
   return pieces.join(" · ") || t("cloudSyncReady");
 }
 
+function defaultSocialProfilePrivacy(): SocialProfilePrivacy {
+  return {
+    profileVisibility: "relations",
+    showLevel: true,
+    showTokenTotal: true,
+    showActiveDays: true,
+    showAchievements: true,
+  };
+}
+
+function normalizeSocialProfileVisibility(value: unknown): SocialProfilePrivacy["profileVisibility"] {
+  return value === "friends" || value === "private" ? value : "relations";
+}
+
+async function ensureSocialProfilePrivacyLoaded() {
+  if (
+    socialProfilePrivacy ||
+    socialProfilePrivacyLoading ||
+    (socialProfilePrivacyError && !socialProfilePrivacy) ||
+    !leaderboardStatus.configured ||
+    !leaderboardStatus.authenticated
+  ) {
+    renderSocialProfilePrivacySettings();
+    return;
+  }
+  socialProfilePrivacyLoading = true;
+  socialProfilePrivacyError = "";
+  socialProfilePrivacyMessage = "";
+  renderSocialProfilePrivacySettings();
+  try {
+    socialProfilePrivacy = await window.bonsai.getSocialProfilePrivacy();
+  } catch (error) {
+    socialProfilePrivacyError = t("socialProfilePrivacyLoadFailed");
+  } finally {
+    socialProfilePrivacyLoading = false;
+    renderSocialProfilePrivacySettings();
+  }
+}
+
+async function updateSocialProfilePrivacy(partial: Partial<SocialProfilePrivacy>) {
+  if (!leaderboardStatus.configured || !leaderboardStatus.authenticated) {
+    renderSocialProfilePrivacySettings();
+    return;
+  }
+  const current = socialProfilePrivacy ?? defaultSocialProfilePrivacy();
+  const previous = socialProfilePrivacy;
+  const optimistic = {
+    ...current,
+    ...partial,
+    profileVisibility:
+      partial.profileVisibility !== undefined
+        ? normalizeSocialProfileVisibility(partial.profileVisibility)
+        : current.profileVisibility,
+  };
+  socialProfilePrivacy = optimistic;
+  socialProfilePrivacyError = "";
+  socialProfilePrivacyMessage = "";
+  renderSocialProfilePrivacySettings();
+  try {
+    socialProfilePrivacy = await window.bonsai.updateSocialProfilePrivacy(optimistic);
+    socialProfilePrivacyMessage = t("socialProfilePrivacySaved");
+  } catch (error) {
+    socialProfilePrivacy = previous;
+    socialProfilePrivacyError = t("socialProfilePrivacySaveFailed");
+  } finally {
+    renderSocialProfilePrivacySettings();
+  }
+}
+
+function renderSocialProfilePrivacySettings() {
+  if (!socialProfilePrivacySettings) return;
+  const privacy = socialProfilePrivacy ?? defaultSocialProfilePrivacy();
+  const loadBlocked = Boolean(socialProfilePrivacyError && !socialProfilePrivacy);
+  const enabled = leaderboardStatus.configured && leaderboardStatus.authenticated && !socialProfilePrivacyLoading && !loadBlocked;
+
+  if (socialProfileVisibilitySelect) {
+    socialProfileVisibilitySelect.value = privacy.profileVisibility;
+    socialProfileVisibilitySelect.disabled = !enabled;
+  }
+  if (socialProfileShowLevelInput) {
+    socialProfileShowLevelInput.checked = privacy.showLevel;
+    socialProfileShowLevelInput.disabled = !enabled;
+  }
+  if (socialProfileShowTokenTotalInput) {
+    socialProfileShowTokenTotalInput.checked = privacy.showTokenTotal;
+    socialProfileShowTokenTotalInput.disabled = !enabled;
+  }
+  if (socialProfileShowActiveDaysInput) {
+    socialProfileShowActiveDaysInput.checked = privacy.showActiveDays;
+    socialProfileShowActiveDaysInput.disabled = !enabled;
+  }
+  if (socialProfileShowAchievementsInput) {
+    socialProfileShowAchievementsInput.checked = privacy.showAchievements;
+    socialProfileShowAchievementsInput.disabled = !enabled;
+  }
+  if (!socialProfilePrivacyStatus) return;
+
+  let message = "";
+  let tone = "";
+  if (!leaderboardStatus.configured) {
+    message = t("leaderboardNoService");
+  } else if (!leaderboardStatus.authenticated) {
+    message = t("leaderboardLoginRequired");
+  } else if (socialProfilePrivacyLoading) {
+    message = t("leaderboardRefreshing");
+  } else if (socialProfilePrivacyError) {
+    message = socialProfilePrivacyError;
+    tone = "error";
+  } else if (socialProfilePrivacyMessage) {
+    message = socialProfilePrivacyMessage;
+    tone = "success";
+  } else {
+    message = t("socialProfilePrivacyHint");
+  }
+  socialProfilePrivacyStatus.textContent = message;
+  socialProfilePrivacyStatus.dataset.tone = tone;
+}
+
 function renderLeaderboardSettings() {
   const renderKey = leaderboardSettingsSignature();
   if (renderKey === leaderboardSettingsRenderKey) return;
@@ -5482,10 +6023,15 @@ function renderSocial() {
     !socialFriendsPanel ||
     !socialGroupsPanel ||
     !socialGroupDetailPanel ||
+    !socialGroupInbox ||
     !socialFriendList ||
     !socialGroupList ||
     !socialGroupDetail ||
+    !socialGroupBasisTabs ||
     !socialGroupLeaderboardRows ||
+    !socialGroupControls ||
+    !socialGroupFriendInviteSelect ||
+    !socialGroupRequestList ||
     !socialInviteOutput
   ) {
     return;
@@ -5522,6 +6068,9 @@ function renderSocial() {
   socialJoinInviteForm?.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button,input").forEach((element) => {
     element.disabled = socialLoading;
   });
+  socialGroupFriendInviteForm?.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button,select").forEach((element) => {
+    element.disabled = socialLoading || !canManageGroup;
+  });
   if (socialInviteManager) {
     socialInviteManager.hidden = !group;
   }
@@ -5548,6 +6097,11 @@ function renderSocial() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
   });
+  socialGroupBasisTabs?.querySelectorAll<HTMLButtonElement>("[data-social-group-basis]").forEach((button) => {
+    const active = normalizeSocialGroupBasis(button.dataset.socialGroupBasis) === socialGroupBasis;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
 
   let summaryHtml = "";
   if (!leaderboardStatus.configured) {
@@ -5556,8 +6110,9 @@ function renderSocial() {
     summaryHtml = `<strong>${t("socialLoading")}</strong><span>${socialPanel === "groups" ? leaderboardRangeLabel(socialGroupRange) : t("socialPanelFriends")}</span>`;
   } else if (socialError) {
     summaryHtml = `<strong>${escapeHtml(socialError)}</strong><span>${t("socialRefresh")}</span>`;
-  } else if (socialPanel === "friends" && socialNotice) {
-    summaryHtml = `<strong>${escapeHtml(socialNotice)}</strong><span>${t("socialFriendRequestSentHint")}</span>`;
+  } else if (socialNotice) {
+    const detail = socialPanel === "friends" ? t("socialFriendRequestSentHint") : t("socialRefresh");
+    summaryHtml = `<strong>${escapeHtml(socialNotice)}</strong><span>${escapeHtml(detail)}</span>`;
   } else if (socialPanel === "friends" && socialFriends.length) {
     const updatedAt = socialFriendsUpdatedAt;
     const updated = updatedAt ? `${t("socialUpdated")} ${formatRelativeTime(updatedAt)}` : "";
@@ -5570,6 +6125,8 @@ function renderSocial() {
   }
   socialSummary.hidden = !summaryHtml;
   socialSummary.innerHTML = summaryHtml;
+
+  socialGroupInbox.innerHTML = renderSocialGroupInbox();
 
   socialFriendList.innerHTML = socialFriends.length
     ? socialFriends
@@ -5622,6 +6179,9 @@ function renderSocial() {
       <strong>${t("socialNoGroupSelected")}</strong>
       <span>${t("socialCreateOrJoin")}</span>
     `;
+    socialGroupControls.innerHTML = "";
+    socialGroupFriendInviteSelect.innerHTML = `<option value="">${escapeHtml(t("socialInviteFriendEmpty"))}</option>`;
+    socialGroupRequestList.innerHTML = "";
     socialInviteOutput.innerHTML = "";
     socialGroupLeaderboardRows.innerHTML = groupsEmpty ? "" : `<div class="leaderboard-empty">${t("socialNoGroupSelected")}</div>`;
     return;
@@ -5629,6 +6189,16 @@ function renderSocial() {
 
   const isOwner = group.ownerUserId === leaderboardStatus.profile?.id;
   const sharing = group.shareUsage !== false;
+  const friendInviteOptions = socialFriends
+    .filter((friend) => friend.status === "accepted")
+    .filter((friend) => !group.members?.some((member) => member.userId === friend.userId))
+    .filter((friend) => !socialGroupJoinRequests.some((request) => request.requesterUserId === friend.userId))
+    .sort((a, b) => a.username.localeCompare(b.username));
+  socialGroupFriendInviteSelect.innerHTML = friendInviteOptions.length
+    ? friendInviteOptions
+        .map((friend) => `<option value="${escapeHtml(friend.userId)}">${escapeHtml(friend.username)}</option>`)
+        .join("")
+    : `<option value="">${escapeHtml(t("socialInviteFriendEmpty"))}</option>`;
   socialGroupDetail.innerHTML = `
     <div class="social-group-title">
       <span class="social-group-icon large" aria-hidden="true">${escapeHtml(group.iconEmoji || "VT")}</span>
@@ -5638,16 +6208,19 @@ function renderSocial() {
       </div>
     </div>
     ${group.description ? `<p>${escapeHtml(group.description)}</p>` : ""}
-    <div class="social-group-detail-actions">
-      <button class="secondary-button" type="button" data-social-group-action="toggle-share" data-group-id="${escapeHtml(group.groupId)}" aria-pressed="${sharing ? "true" : "false"}">
-        ${sharing ? t("socialGroupShareOn") : t("socialGroupShareOff")}
+  `;
+  socialGroupControls.innerHTML = `
+    <div class="social-share-control">
+      <span class="social-share-label">${t("socialGroupShareLabel")}</span>
+      <button class="secondary-button social-share-toggle" type="button" data-social-group-action="toggle-share" data-group-id="${escapeHtml(group.groupId)}" aria-pressed="${sharing ? "true" : "false"}">
+        ${sharing ? t("socialGroupShareEnabled") : t("socialGroupShareDisabled")}
       </button>
-      ${
-        isOwner
-          ? ""
-          : `<button class="secondary-button danger-button" type="button" data-social-group-action="leave" data-group-id="${escapeHtml(group.groupId)}">${t("socialGroupLeave")}</button>`
-      }
     </div>
+    ${
+      isOwner
+        ? ""
+        : `<button class="secondary-button danger-button" type="button" data-social-group-action="leave" data-group-id="${escapeHtml(group.groupId)}">${t("socialGroupLeave")}</button>`
+    }
   `;
 
   socialInviteOutput.innerHTML = socialInvite
@@ -5658,13 +6231,18 @@ function renderSocial() {
     `
     : "";
 
+  socialGroupRequestList.innerHTML = canManageGroup ? renderSocialGroupRequests() : "";
+
   const board = socialGroupLeaderboard;
-  if (socialGroupLeaderboardLoading && (!board || board.groupId !== group.groupId || board.range !== socialGroupRange)) {
+  if (
+    socialGroupLeaderboardLoading &&
+    (!board || board.groupId !== group.groupId || board.range !== socialGroupRange || board.basis !== socialGroupBasis)
+  ) {
     socialGroupLeaderboardRows.innerHTML = `<div class="leaderboard-empty">${t("socialLeaderboardLoading")}</div>`;
     return;
   }
 
-  if (!board || board.groupId !== group.groupId || board.range !== socialGroupRange) {
+  if (!board || board.groupId !== group.groupId || board.range !== socialGroupRange || board.basis !== socialGroupBasis) {
     socialGroupLeaderboardRows.innerHTML = `<div class="leaderboard-empty">${t("leaderboardClickRefresh")}</div>`;
     return;
   }
@@ -5693,6 +6271,7 @@ function renderSocial() {
               <strong>${escapeHtml(entry.username || t("unknownUser"))}${isMe ? ` <em>${t("leaderboardMe")}</em>` : ""}</strong>
               <span>${socialRoleLabel(entry.role)}</span>
               ${days}
+              <span class="social-profile-open-copy">${t("socialProfileOpenHint")}</span>
             </div>
           </button>
           <strong class="leaderboard-tokens">${formatNumber(entry.tokens)} token</strong>
@@ -5700,6 +6279,85 @@ function renderSocial() {
       `;
     })
     .join("");
+}
+
+function renderSocialGroupInbox() {
+  const requests = [...socialIncomingGroupInvites, ...socialOutgoingGroupRequests];
+  if (!requests.length) return "";
+  return `
+    <section class="social-request-section">
+      ${requests
+        .map((request) => {
+          const incoming = request.type === "friend_invite";
+          const secondary = incoming
+            ? t("socialGroupInviteFrom").replace("{name}", request.invitedByUsername || t("unknownUser"))
+            : t("socialGroupInvitePending");
+          return `
+            <article class="social-request-item">
+              ${socialGroupRequestAvatar(request)}
+              <span class="social-request-copy">
+                <strong>${escapeHtml(request.groupName)}</strong>
+                <span>${escapeHtml(secondary)}</span>
+              </span>
+              <span class="social-request-actions">
+                ${
+                  incoming
+                    ? `<button class="secondary-button" type="button" data-social-group-inbox-action="accept" data-social-group-request-id="${escapeHtml(request.requestId)}">${t("socialGroupInviteAccept")}</button>`
+                    : ""
+                }
+                <button class="secondary-button" type="button" data-social-group-inbox-action="decline" data-social-group-request-id="${escapeHtml(request.requestId)}">${incoming ? t("socialGroupInviteDecline") : t("socialGroupInviteCancel")}</button>
+              </span>
+            </article>
+          `;
+        })
+        .join("")}
+    </section>
+  `;
+}
+
+function renderSocialGroupRequests() {
+  const groupRequests = socialGroupJoinRequests.filter((request) => request.groupId === socialSelectedGroupId);
+  if (!groupRequests.length) {
+    return `<div class="leaderboard-empty social-empty compact">${t("socialGroupRequestsEmpty")}</div>`;
+  }
+  return `
+    <section class="social-request-section">
+      <strong class="social-request-section-title">${t("socialGroupRequests")}</strong>
+      ${groupRequests
+        .map((request) => {
+          const isCodeRequest = request.type === "invite_code";
+          const meta = isCodeRequest
+            ? t("socialGroupInviteFrom").replace("{name}", request.requesterUsername)
+            : t("socialGroupInviteTo").replace("{name}", request.requesterUsername);
+          return `
+            <article class="social-request-item">
+              ${socialGroupRequestAvatar(request)}
+              <span class="social-request-copy">
+                <strong>${escapeHtml(request.requesterUsername)}</strong>
+                <span>${escapeHtml(meta)}</span>
+              </span>
+              <span class="social-request-actions">
+                ${
+                  isCodeRequest
+                    ? `<button class="secondary-button" type="button" data-social-group-request-action="approve" data-social-group-request-id="${escapeHtml(request.requestId)}">${t("socialGroupInviteApprove")}</button>`
+                    : `<span class="social-request-pill">${t("socialGroupInvitePending")}</span>`
+                }
+                <button class="secondary-button" type="button" data-social-group-request-action="decline" data-social-group-request-id="${escapeHtml(request.requestId)}">${t("socialGroupInviteDecline")}</button>
+              </span>
+            </article>
+          `;
+        })
+        .join("")}
+    </section>
+  `;
+}
+
+function socialGroupRequestAvatar(request: SocialGroupJoinRequest) {
+  const label = request.requesterUsername || request.groupName || "VT";
+  const avatar = request.groupIconEmoji
+    ? `<span class="leaderboard-avatar placeholder" aria-hidden="true">${escapeHtml(request.groupIconEmoji)}</span>`
+    : leaderboardAvatar(request.requesterAvatarUrl, label);
+  return avatar;
 }
 
 function leaderboardStatusCopy() {
@@ -6366,8 +7024,30 @@ function socialRenderSignature() {
     notice: socialNotice,
     selectedGroupId: socialSelectedGroupId,
     range: socialGroupRange,
+    basis: socialGroupBasis,
     friendsUpdatedAt: socialFriendsUpdatedAt,
     updatedAt: socialGroupsUpdatedAt,
+    incomingGroupInvites: socialIncomingGroupInvites.map((request) => [
+      request.requestId,
+      request.groupId,
+      request.groupName,
+      request.invitedByUsername ?? "",
+      request.updatedAt ?? "",
+    ]),
+    outgoingGroupRequests: socialOutgoingGroupRequests.map((request) => [
+      request.requestId,
+      request.groupId,
+      request.groupName,
+      request.updatedAt ?? "",
+    ]),
+    groupJoinRequests: socialGroupJoinRequests.map((request) => [
+      request.requestId,
+      request.groupId,
+      request.type,
+      request.requesterUserId,
+      request.requesterUsername,
+      request.updatedAt ?? "",
+    ]),
     status: {
       configured: leaderboardStatus.configured,
       authenticated: leaderboardStatus.authenticated,
@@ -6398,13 +7078,14 @@ function socialRenderSignature() {
       group.memberCount,
       group.role ?? "",
       group.updatedAt ?? "",
-      group.members?.length ?? 0,
+      group.members?.map((member) => member.userId).join(",") ?? "",
       group.shareUsage === false ? 0 : 1,
     ]),
     board: socialGroupLeaderboard
       ? {
           groupId: socialGroupLeaderboard.groupId,
           range: socialGroupLeaderboard.range,
+          basis: socialGroupLeaderboard.basis,
           updatedAt: socialGroupLeaderboard.updatedAt,
           error: socialGroupLeaderboard.error,
           me: socialGroupLeaderboard.me?.rank,

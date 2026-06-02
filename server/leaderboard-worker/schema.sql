@@ -139,6 +139,16 @@ CREATE TABLE IF NOT EXISTS usage_visibility (
   FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS usage_totals (
+  user_id TEXT PRIMARY KEY,
+  tokens INTEGER NOT NULL DEFAULT 0,
+  days_active INTEGER NOT NULL DEFAULT 0,
+  first_usage_date TEXT,
+  app_version TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS security_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
@@ -216,6 +226,39 @@ CREATE TABLE IF NOT EXISTS social_group_invite_redemptions (
   FOREIGN KEY (group_id) REFERENCES social_groups(group_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS social_group_join_requests (
+  request_id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  requester_user_id TEXT NOT NULL,
+  invited_by_user_id TEXT,
+  invite_code_hash TEXT,
+  request_type TEXT NOT NULL,
+  role TEXT NOT NULL,
+  status TEXT NOT NULL,
+  message TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_by_user_id TEXT,
+  resolved_at TEXT,
+  FOREIGN KEY (group_id) REFERENCES social_groups(group_id) ON DELETE CASCADE,
+  FOREIGN KEY (requester_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+  FOREIGN KEY (invited_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL,
+  FOREIGN KEY (invite_code_hash) REFERENCES social_group_invites(invite_code_hash) ON DELETE SET NULL,
+  FOREIGN KEY (resolved_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS social_profile_privacy (
+  user_id TEXT PRIMARY KEY,
+  profile_visibility TEXT NOT NULL DEFAULT 'relations',
+  show_level INTEGER NOT NULL DEFAULT 1,
+  show_token_total INTEGER NOT NULL DEFAULT 1,
+  show_active_days INTEGER NOT NULL DEFAULT 1,
+  show_achievements INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_usage_date ON daily_usage(date);
 CREATE INDEX IF NOT EXISTS idx_daily_usage_user ON daily_usage(user_id);
 CREATE INDEX IF NOT EXISTS idx_hourly_usage_hour ON hourly_usage(hour_start_utc);
@@ -233,6 +276,7 @@ CREATE INDEX IF NOT EXISTS idx_tree_model_stats_user ON tree_model_stats(user_id
 CREATE INDEX IF NOT EXISTS idx_tree_model_stats_device ON tree_model_stats(user_id, device_id);
 CREATE INDEX IF NOT EXISTS idx_tree_model_stats_user_updated ON tree_model_stats(user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_usage_preferences_user ON usage_preferences(user_id);
+CREATE INDEX IF NOT EXISTS idx_usage_totals_tokens ON usage_totals(tokens);
 CREATE INDEX IF NOT EXISTS idx_auth_codes_expires ON auth_codes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
@@ -248,3 +292,7 @@ CREATE INDEX IF NOT EXISTS idx_social_group_invites_group ON social_group_invite
 CREATE INDEX IF NOT EXISTS idx_social_group_invites_creator ON social_group_invites(created_by_user_id);
 CREATE INDEX IF NOT EXISTS idx_social_group_invites_expires ON social_group_invites(expires_at);
 CREATE INDEX IF NOT EXISTS idx_social_group_invite_redemptions_user ON social_group_invite_redemptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_social_group_join_requests_group_status ON social_group_join_requests(group_id, status);
+CREATE INDEX IF NOT EXISTS idx_social_group_join_requests_requester_status ON social_group_join_requests(requester_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_social_group_join_requests_inviter ON social_group_join_requests(invited_by_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_social_group_join_requests_pending_user ON social_group_join_requests(group_id, requester_user_id) WHERE status = 'pending';

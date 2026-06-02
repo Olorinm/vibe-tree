@@ -193,7 +193,7 @@ WHERE COALESCE(v.public_global, 1) = 1
 
 ## 5. 实现状态(2026-05-31)
 
-第 3 节 Step 1-8 的**解耦方案已实现**,并已补上资料卡、邀请原子化与入群后贡献口径。改动文件:
+第 3 节 Step 1-8 的**解耦方案已实现**,并已补上资料卡、邀请原子化与群内私域榜口径。改动文件:
 
 - **Worker** [`index.ts`](../server/leaderboard-worker/src/index.ts):`ensureUsageVisibilityTable`、全球榜 3 个 range 分支加 `LEFT JOIN usage_visibility v ... COALESCE(v.public_global,1)=1`、`syncDailyUsage` 接受 `usagePublic` 并 upsert、`leaveLeaderboard` 改为只设 `public_global=0` 并保留 usage、`deleteMe` 显式清 visibility/redemptions、新增 `leaveSocialGroup`(群主 409)+ `setSocialGroupShareUsage` 并接入 `handleSocialRoute`。
 - **Schema/迁移**:[`schema.sql`](../server/leaderboard-worker/schema.sql) 加 `usage_visibility` 与 `social_group_invite_redemptions`,新建 [`migrations/20260531_usage_visibility.sql`](../server/leaderboard-worker/migrations/20260531_usage_visibility.sql) 和 [`migrations/20260531_social_group_invite_redemptions.sql`](../server/leaderboard-worker/migrations/20260531_social_group_invite_redemptions.sql),`package.json` 加对应 `db:migrate:*` 脚本。
@@ -206,7 +206,7 @@ WHERE COALESCE(v.public_global, 1) = 1
 - ✅ `npm run typecheck` 通过。
 - ✅ `npm run build` 通过。
 - ✅ `npm run smoke:electron` 通过。
-- ✅ `cd server/leaderboard-worker && npm run verify:api` 通过,覆盖好友、群组、邀请、群组/全球榜解耦、退全球榜保留群组数据、资料卡关系门、原子化邀请、加入后贡献口径。
+- ✅ `cd server/leaderboard-worker && npm run verify:api` 通过,覆盖好友、群组、邀请、群组/全球榜解耦、退全球榜保留群组数据、资料卡关系门、原子化邀请、群内历史总榜口径。
 - ✅ `git diff --check` 通过。
 
 **部署提醒:** 先 apply migration + 部署 Worker,再发客户端(老 Worker 会 404 新路由)。
@@ -219,7 +219,7 @@ WHERE COALESCE(v.public_global, 1) = 1
 
 ### 设计要点
 
-- **数据复用,不新建存储。** 服务端已有原始事实(`users.created_at` 入会时间、`daily_usage` 的 `SUM(xp)` 总量与活跃天数、`tree_achievements` 解锁 ID、好友 / 成员关系表)。等级 / 阶段公式(`100_000 × L^1.65`,新芽→完全体)与成就目录(名称 / 稀有度 / 图标)**都在客户端**——所以接口只回原始事实,renderer 用 `summarizeXpProgression`(从 `stats.ts` 导出,复用 dashboard 同一套公式)算等级、用 `ACHIEVEMENTS` 映射徽章。数字与全球榜口径一致(同样 `SUM(xp)` / `COUNT(xp>0)`)。
+- **数据复用 + 轻量总量聚合。** `daily_usage` / `hourly_usage` 继续负责 24h / 7d / 30d 等榜单窗口;`usage_totals` 只存每个用户的历史 token 总量、活跃天数和最早日期,用于个人卡片与群组 / 全球的 `全部 + 总用量`。这避免为了全量榜反复上传完整历史明细,也避免把"总用量"误做成 30 天滚动窗口。
 - **两层隐私,与解耦的 consent 信号一致。**
   - *访问门*(能否打开卡片):本人 / 已接受好友 / 同群成员,否则 **404**(连存在性都不暴露)。
   - *用量层*(等级 / 总量 / 活跃天 / 成就是否展示):仅当目标有触达本查看者的 consent 信号——本人、已上全球榜(`public_global=1`)、或在共享群里 `share_usage=1`。好友若全关,则只显示身份层(头像 / 名字 / 入会 / 关系数)。这把"群内展示到什么程度"用既有开关回答了,而非新发明隐私模型。
@@ -233,32 +233,70 @@ WHERE COALESCE(v.public_global, 1) = 1
 
 **验证:** ✅ typecheck + build + smoke:electron + worker verify:api 通过。
 
+---
+
+## 7. 统计与同步流量排查(2026-06-01 更新)
+
+本轮排查确认:原先 `全部 + 总用量` 仍会落到 `daily_usage` 求和,而客户端只上传 30 天 daily 窗口,所以它不是可靠历史总量。修复后:
+
+- `/api/usage/daily` 仍只上传最多 30 天 daily + 约 72 小时 hourly,保证榜单窗口轻量。
+- 同一请求额外带 `totalTokens` / `totalDaysActive` / `firstUsageDate`,写入 `usage_totals`,用于全球榜与群组榜的 `range=all&basis=total`、个人资料卡历史总量。
+- `range=all&basis=since_join` 继续按 `daily_usage` + `m.joined_at` 过滤,保持公会贡献榜语义。
+- 云同步的 `tree_model_stats` 上传加本地签名缓存,未变化时只上传设备心跳,不再重复发送模型聚合整包。
+- `/api/tree/delta` 的 `modelStats` 改为只返回 cursor 后变更的行,响应标记 `modelStatsFull:false`;客户端已有 merge 逻辑,会把增量合入本地缓存。
+
+**新增验证:** `verify-worker-api.mjs` 覆盖 30 天窗口外历史总量进入 `basis=total`、不进入 `basis=since_join`;`verify-cloud-sync.mjs` 覆盖模型统计未变不重复上传、变更后继续上传、delta 只返回变更模型统计。
+
+---
+
+## 8. 资料卡隐私设置(2026-06-01 更新)
+
+用户明确提出:现在没有办法决定资料卡里展示什么、不展示什么。这里补的是**服务端字段级隐私**,不是前端视觉隐藏。
+
+### 产品规则
+
+- `谁可以打开资料卡`:好友和同群成员 / 仅好友 / 仅自己。
+- 字段开关:等级和阶段、累计 Token、活跃天数、成就陈列。
+- 本人看自己永远完整;其他人只在既满足访问门、又满足用量 consent(全球公开或同群共享)时,才按字段开关拿到数据。
+- 被隐藏字段不出现在 `GET /api/social/users/:userId/profile` 响应里,避免客户端或抓包看到被关掉的数值。
+- 群组排行榜仍由每个群的 `群内共享用量` 控制,资料卡隐私不偷偷改群榜。
+
+### 实现
+
+- **Worker**:新增 `social_profile_privacy` 表与 `GET/POST /api/social/profile-privacy`;`getSocialProfile` 读取目标用户隐私,访问门从固定"好友/同群"升级为可配置,返回字段按 `show_*` 裁剪。
+- **Schema/迁移**:新增 [`migrations/20260601_social_profile_privacy.sql`](../server/leaderboard-worker/migrations/20260601_social_profile_privacy.sql) 和 [`migrations/20260601_usage_totals.sql`](../server/leaderboard-worker/migrations/20260601_usage_totals.sql),`schema.sql` 和 `package.json` 同步 `db:migrate:social-profile-privacy` / `db:migrate:usage-totals`。
+- **客户端桥接**:`leaderboard.ts` / `main.ts` / `preload.ts` / `preload.cjs` / `global.d.ts` 增加 profile privacy 读写方法。
+- **Renderer**:设置页「同步与排行」里新增「资料卡隐私」区域;资料卡渲染支持字段缺失时的降级显示,例如只展示等级但隐藏具体累计 Token。
+- **verify**:新增断言:默认资料卡对好友/同群可见;关闭累计 Token/活跃天/成就后接口不返回这些字段;切到仅自己后同群成员打开资料卡返回 404。
+
+**验证:** ✅ typecheck + build + worker verify:api 通过;UI 已在本地 Electron 设置页做可视检查。
+
 ### A3 修复:原子化邀请 maxUses(随手清技术债)
 
 原 [`acceptSocialGroupInvite`](../server/leaderboard-worker/src/index.ts) 先 `SELECT uses` 判断 `uses >= maxUses`,再在独立 batch 里 `uses = uses + 1`——两步之间存在 TOCTOU 竞态,并发接受可超发。改为两层防护:先写 `social_group_invite_redemptions(invite_code_hash,user_id)` 防止同一用户并发重复消耗同一邀请码,再做**条件化单条 UPDATE**:`SET uses = uses + 1 WHERE invite_code_hash = ? AND revoked_at IS NULL AND (expires_at ...) AND (max_uses IS NULL OR uses < max_uses)`,以 `result.meta.changes` 判定是否抢到名额;抢不到(`changes === 0`)直接 410 并释放 redemption。SQLite 写串行化 ⇒ 恰好 maxUses 次 UPDATE 成功。抢到后再 `INSERT OR IGNORE` 成员(PK `group_id+user_id` 幂等);若成员已由其它路径并发加入,回退本次 uses。保留原有 revoked/expired/used-up 预检以提供常态下的友好报错。verify 加断言 (f):单次邀请被消费后,即便加入者退群,`uses` 不回退、邀请码不可复用。
 
 ---
 
-## 7. 群内"加入后贡献"指标(2026-05-31,P2 首项)
+## 9. 群内私域榜口径(2026-06-01 更新)
 
-群组榜从展示**历史总量**改为**按加入日期之后的贡献**。一举两得:更像公会战(入群从 0 开始攒),且把成员加入日期之前的历史挡在群外——强化"群组 ≠ 全球后台"的隐私语义。当前聚合数据只有天/小时桶,所以这是按日期地板而不是精确到入群秒级的结算。
+2026-05-31 曾把群组榜改成"入群后贡献",更像公会战/赛季榜。2026-06-01 明确产品上需要**两种口径并存**:既要好友 / 公司内部历史总榜,也要游戏式的入群后贡献榜。
+
+- 群组成员 + `share_usage=1` 决定是否可见。
+- `basis=total`:展示历史总用量或对应时间窗口总用量。
+- `basis=since_join`:展示入群后的累计贡献或对应时间窗口内、且入群之后的贡献。
+- `range=24h|7d|30d|all`:控制时间范围。
+- `usage_visibility.public_global=0` 只影响全球榜,不影响用户在已加入且开启共享的群组里展示。
 
 ### 机制
 
-[`socialGroupLeaderboardDataForRange`](../server/leaderboard-worker/src/index.ts) 三个 range 分支统一在读 `daily_usage` / `hourly_usage` 时按成员 `m.joined_at` 设地板:
-
-- daily:`d.date >= date(m.joined_at)`(`daily_usage.date` 是 `YYYY-MM-DD`,`date()` 把 ISO `joined_at` 截到日)。
-- hourly(24h 分支):`h.hour_start_utc >= date(m.joined_at)`——**按日**而非按时刻设限。否则刚入群者在本小时桶(`T14:00`)早于其入群时刻(`T14:23`)时会被算成 0,直到下一个整点;按日则入群当天整天计入,符合"按天"的贡献语义,也避免破坏既有 24h 断言。
-- `daysActive` 相关子查询同样加 `AND all_days.date >= date(m.joined_at)`——否则活跃天数仍泄露入群前历史,与隐私目标矛盾。
-
-全球榜不受影响(仍 `SUM(d.xp)` 全量)。同一个人在全球榜是生涯总量、在每个群是各自入群后的增量。
+[`socialGroupLeaderboardDataForRange`](../server/leaderboard-worker/src/index.ts) 先按群成员关系与 `share_usage` 过滤。`range=all&basis=total` 读 `usage_totals`,拿真实历史总量;`basis=since_join` 与 24h/7d/30d 仍读 `daily_usage`/`hourly_usage`,并在需要时加 `m.joined_at` 地板。这样默认总榜与全球榜在数学口径上保持一致,差别只在可见范围;切到入群后贡献时,同一套 range 会额外排除加入群组之前的桶。
 
 ### 客户端
 
-- [`appShell.ts`](../src/renderer/appShell.ts):群组榜上方加 `.social-board-note` 文案,明示"只统计入群后贡献"。`i18n.ts` 中英双补 `socialGroupContributionNote`、`styles.css` 加样式。
+- [`appShell.ts`](../src/renderer/appShell.ts):群组榜工具条新增 `总用量 / 入群后` 口径切换,并保留 `24h / 7 天 / 30 天 / 全部` 时间范围。`i18n.ts` 中英双补 `socialGroupBasis*` 与 `socialGroupContributionNote`。
 
 ### 验证说明(本次改动风险最高项)
 
-这是本会话**唯一改写了排行榜排序数学**的改动,横跨三个形态不同的 SQL 分支。`date(m.joined_at)` 对 ISO-8601(`...T..:..:...000Z`)的解析、按日地板的边界、三分支聚合一致性都已由 `verify:api` 覆盖。verify 断言 (g):成员加入日期前的回填用量在群组 all 榜被排除(仍只算加入日期后的 777),但同一笔仍计入其个人全球 all 榜(777 + 9999 = 10776)。
+verify 断言 (g) 已改为:默认 / `basis=total` 时,成员加入日期前且超出 30 天 daily 上传窗口的历史用量会通过 `usage_totals` 进入群组 `all` 榜(777 + 9999 = 10776),证明群组可做内部历史总榜;`basis=since_join` 时同一用户只显示入群后的 777,证明公会贡献榜也保留。同一用户后续设 `usagePublic:false` 时仍会从全球榜隐藏,但保留群组可见性。
 
 **验证:** ✅ typecheck + build + smoke:electron + worker verify:api 通过。
