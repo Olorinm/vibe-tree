@@ -59,6 +59,9 @@ const POLL_INTERVAL_MS = 10_000;
 const READ_CHUNK_SIZE = 64 * 1024;
 const DEFAULT_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
 const WATCH_STATE_VERSION = 6;
+const SESSION_META_READ_LIMIT = 2 * 1024 * 1024;
+const PARENT_CUMULATIVE_TAIL_READ_LIMIT = 16 * 1024 * 1024;
+const PARENT_CUMULATIVE_TAIL_CHUNK_SIZE = 256 * 1024;
 
 export function startCodexSessionWatcher(options: CodexSessionWatcherOptions) {
   const sessionsRoot = options.sessionsRoot || process.env.VIBE_CODEX_SESSIONS_DIR || DEFAULT_SESSIONS_ROOT;
@@ -102,6 +105,7 @@ export function startCodexSessionWatcher(options: CodexSessionWatcherOptions) {
         importHistory,
         watcherStartedAt,
         historyStartAtMs,
+        sessionsRoot,
       });
       if (imported > 0) {
         status.eventsImported += imported;
@@ -131,17 +135,24 @@ function scanFile(
   state: WatchState,
   statePath: string,
   options: CodexSessionWatcherOptions,
-  settings: { importHistory: boolean; watcherStartedAt: number; historyStartAtMs?: number },
+  settings: { importHistory: boolean; watcherStartedAt: number; historyStartAtMs?: number; sessionsRoot: string },
 ): number {
   let imported = 0;
   const stats = statSync(filePath);
   const previousOffset = state.files[filePath];
+  if ((previousOffset === undefined || stats.size > previousOffset) && isArchivedCodexSession(filePath)) {
+    state.files[filePath] = stats.size;
+    writeState(statePath, state);
+    return imported;
+  }
+  const forkBaseline = seedForkCumulativeBaseline(filePath, state, settings.sessionsRoot);
   const offset =
     previousOffset ??
     initialOffset(filePath, stats, {
       importHistory: settings.importHistory,
       watcherStartedAt: settings.watcherStartedAt,
       historyStartAtMs: settings.historyStartAtMs,
+      hasForkBaseline: Boolean(forkBaseline),
     });
 
   if (stats.size <= offset) {
@@ -250,18 +261,173 @@ function scanNewLines(filePath: string, start: number, end: number, onLine: (lin
 function initialOffset(
   filePath: string,
   stats: Stats,
-  settings: { importHistory: boolean; watcherStartedAt: number; historyStartAtMs?: number },
+  settings: { importHistory: boolean; watcherStartedAt: number; historyStartAtMs?: number; hasForkBaseline?: boolean },
 ) {
+  if (settings.hasForkBaseline) {
+    return 0;
+  }
+  if (shouldBaselineInitialCodexSession(filePath)) {
+    return stats.size;
+  }
   if (settings.historyStartAtMs && stats.mtimeMs >= settings.historyStartAtMs - 5_000) {
     return 0;
   }
   if (settings.importHistory && isTodaySessionPath(filePath)) {
     return 0;
   }
-  if (stats.mtimeMs >= settings.watcherStartedAt - 5_000) {
+  if (stats.mtimeMs >= settings.watcherStartedAt - 5_000 && shouldImportRecentlyUpdatedSession(filePath)) {
     return 0;
   }
   return stats.size;
+}
+
+function shouldImportRecentlyUpdatedSession(filePath: string) {
+  const sessionDate = sessionPathDateKey(filePath);
+  return !sessionDate || sessionDate === todayDateKey();
+}
+
+function shouldBaselineInitialCodexSession(filePath: string) {
+  if (isArchivedCodexSession(filePath)) return true;
+  if (isForkedCodexSession(filePath)) return true;
+  const sessionDate = sessionPathDateKey(filePath);
+  return Boolean(sessionDate && sessionDate !== todayDateKey());
+}
+
+function isArchivedCodexSession(filePath: string) {
+  return /[\\/]archived_sessions[\\/]/.test(filePath);
+}
+
+function isForkedCodexSession(filePath: string) {
+  return Boolean(readCodexSessionMeta(filePath)?.forkedFromId);
+}
+
+function readCodexSessionMeta(filePath: string) {
+  const firstLine = readFirstLine(filePath, SESSION_META_READ_LIMIT);
+  if (!firstLine) return undefined;
+  const parsed = parseJson(firstLine);
+  if (parsed?.type !== "session_meta") return undefined;
+  const payload = asRecord(parsed?.payload);
+  return {
+    createdAtMs: typeof parsed.timestamp === "string" ? timestampMs(parsed.timestamp) : undefined,
+    forkedFromId: typeof payload?.forked_from_id === "string" ? payload.forked_from_id : undefined,
+  };
+}
+
+function seedForkCumulativeBaseline(filePath: string, state: WatchState, sessionsRoot: string | undefined) {
+  const meta = readCodexSessionMeta(filePath);
+  if (!meta?.forkedFromId || !sessionsRoot) return undefined;
+  const cumulativeKey = `${filePath}:total`;
+  const existingUsage = normalizeStoredUsage(state.cumulativeTokens[cumulativeKey]);
+  if (state.acceptedCumulativeKeys[cumulativeKey] && existingUsage) {
+    return existingUsage;
+  }
+
+  const baselineUsage = resolveForkParentCumulativeUsage(meta.forkedFromId, sessionsRoot, state, meta.createdAtMs);
+  if (!baselineUsage) return undefined;
+
+  const nextBaseline = maxUsage(baselineUsage, existingUsage);
+  state.cumulativeTokens[cumulativeKey] = nextBaseline;
+  state.acceptedCumulativeKeys[cumulativeKey] = true;
+  return nextBaseline;
+}
+
+function resolveForkParentCumulativeUsage(
+  parentSessionId: string,
+  sessionsRoot: string,
+  state: WatchState,
+  latestAtMs: number | undefined,
+) {
+  const parentFilePath = findCodexSessionFileById(parentSessionId, sessionsRoot, state);
+  if (!parentFilePath) return undefined;
+
+  const fileUsage = readLatestCumulativeUsageFromFile(parentFilePath, latestAtMs);
+  if (fileUsage) return fileUsage;
+  return normalizeStoredUsage(state.cumulativeTokens[`${parentFilePath}:total`]);
+}
+
+function findCodexSessionFileById(parentSessionId: string, sessionsRoot: string, state: WatchState) {
+  for (const key of Object.keys(state.cumulativeTokens)) {
+    if (key.endsWith(":total") && key.includes(parentSessionId)) {
+      return key.slice(0, -":total".length);
+    }
+  }
+  if (!existsSync(sessionsRoot)) return undefined;
+  return listJsonlFiles(sessionsRoot).find((candidate) => candidate.includes(parentSessionId));
+}
+
+function readLatestCumulativeUsageFromFile(filePath: string, latestAtMs: number | undefined) {
+  if (!existsSync(filePath)) return undefined;
+  const stats = statSync(filePath);
+  const fd = openSync(filePath, "r");
+  const maxBytes = Math.min(stats.size, PARENT_CUMULATIVE_TAIL_READ_LIMIT);
+  const buffer = Buffer.allocUnsafe(Math.min(PARENT_CUMULATIVE_TAIL_CHUNK_SIZE, maxBytes || 1));
+  let remaining = maxBytes;
+  let position = stats.size;
+  let carry = Buffer.alloc(0);
+
+  try {
+    while (remaining > 0) {
+      const bytesToRead = Math.min(buffer.length, remaining);
+      position -= bytesToRead;
+      remaining -= bytesToRead;
+      const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
+      if (bytesRead <= 0) break;
+      const data = Buffer.concat([buffer.subarray(0, bytesRead), carry]);
+      let lineEnd = data.length;
+      for (let index = data.length - 1; index >= 0; index -= 1) {
+        if (data[index] !== 10) continue;
+        const line = data.subarray(index + 1, lineEnd).toString("utf8").trim();
+        const usage = cumulativeUsageFromParentLine(line, filePath, latestAtMs);
+        if (usage) return usage;
+        lineEnd = index;
+      }
+      carry = data.subarray(0, lineEnd);
+    }
+
+    const line = carry.toString("utf8").trim();
+    return cumulativeUsageFromParentLine(line, filePath, latestAtMs);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function cumulativeUsageFromParentLine(line: string, filePath: string, latestAtMs: number | undefined) {
+  if (!line || !line.includes("\"token_count\"")) return undefined;
+  const event = parseCodexTokenCountLine(line, filePath, 0, undefined);
+  if (!event?.cumulativeUsage) return undefined;
+  const eventMs = timestampMs(event.createdAt);
+  if (latestAtMs && eventMs && eventMs > latestAtMs) return undefined;
+  return event.cumulativeUsage;
+}
+
+function readFirstLine(filePath: string, maxBytes: number) {
+  let fd: number | undefined;
+  const buffer = Buffer.allocUnsafe(Math.min(READ_CHUNK_SIZE, maxBytes));
+  const decoder = new StringDecoder("utf8");
+  let position = 0;
+  let pending = "";
+
+  try {
+    fd = openSync(filePath, "r");
+    while (position < maxBytes) {
+      const bytesToRead = Math.min(buffer.length, maxBytes - position);
+      const bytesRead = readSync(fd, buffer, 0, bytesToRead, position);
+      if (bytesRead <= 0) break;
+      position += bytesRead;
+      pending += decoder.write(buffer.subarray(0, bytesRead));
+      const newlineIndex = pending.indexOf("\n");
+      if (newlineIndex >= 0) {
+        const rawLine = pending.slice(0, newlineIndex);
+        return rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      }
+    }
+    pending += decoder.end();
+    return pending.trim() ? pending : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function parseCodexTurnContextLine(line: string) {
@@ -497,16 +663,31 @@ function hash(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
 }
 
+export const __test = {
+  scanFile,
+  readState,
+  writeState,
+};
+
 function isTodaySessionPath(filePath: string) {
+  return sessionPathDateKey(filePath) === todayDateKey();
+}
+
+function todayDateKey() {
   const now = new Date();
+  return [
+    String(now.getFullYear()),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function sessionPathDateKey(filePath: string) {
   const parts = filePath.split(/[\\/]+/);
-  const year = String(now.getFullYear());
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
   for (let index = 0; index < parts.length - 2; index += 1) {
-    if (parts[index] === year && parts[index + 1] === month && parts[index + 2] === day) {
-      return true;
+    if (/^\d{4}$/.test(parts[index]) && /^\d{2}$/.test(parts[index + 1]) && /^\d{2}$/.test(parts[index + 2])) {
+      return `${parts[index]}-${parts[index + 1]}-${parts[index + 2]}`;
     }
   }
-  return false;
+  return undefined;
 }

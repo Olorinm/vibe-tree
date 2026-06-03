@@ -2,6 +2,61 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.7.2",
+      "publishedAt": "2026-06-04",
+      "fullReleaseUrl": "https://github.com/Olorinm/vibe-tree/releases/tag/v0.7.2",
+      "title": {
+        "zh-CN": "Vibe Tree v0.7.2",
+        "en-US": "Vibe Tree v0.7.2"
+      },
+      "summary": {
+        "zh-CN": "本次更新是一个稳定性补丁：macOS 菜单栏浮窗在切换桌面或全屏空间后更可靠，Codex fork 统计会以父会话累计 token 作为基线，只记录 fork 后真正新增的增量。升级不会清空本机小树；社交、排行榜和同养小树仍然都是可选功能。",
+        "en-US": "This is a stability patch: the macOS menu bar popover behaves more reliably across Desktops and full-screen Spaces, and Codex fork tracking now uses the parent session's cumulative token total as a baseline so only real post-fork growth is recorded. Upgrading does not clear your local tree; social features, leaderboards, and shared-tree sync remain optional."
+      },
+      "highlights": {
+        "zh-CN": [
+          "macOS 菜单栏浮窗现在可以跨桌面和全屏空间显示，点击状态栏小树时不应该再把你带回原来的桌面。",
+          "Codex fork 统计会继承父会话的累计 token 基线，避免把 fork 搬运过来的历史重放误算成新的今日成长。",
+          "fork 后继续产生的新 token 仍会按超过基线的增量正常记录。"
+        ],
+        "en-US": [
+          "The macOS menu bar popover can now appear across Desktops and full-screen Spaces, so clicking the status item should no longer send you back to the original Desktop.",
+          "Codex fork tracking now inherits the parent session's cumulative token baseline so replayed history is not counted as new growth.",
+          "New tokens produced after the fork are still recorded as usage beyond that baseline."
+        ]
+      },
+      "fixes": {
+        "zh-CN": [
+          "修复菜单栏浮窗切到其他桌面或全屏页面后可能不显示、或把系统切回原桌面的问题。",
+          "修复 Codex fork 或旧会话重新打开时，历史重放可能被误算成今日新增 token 的问题。"
+        ],
+        "en-US": [
+          "Fixed the menu bar popover sometimes not appearing, or switching macOS back to the original Desktop, after moving to another Desktop or full-screen Space.",
+          "Fixed Codex usage tracking over-counting replayed history when forked or old sessions are reopened."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "本次更新没有新增上传字段。",
+          "Vibe Tree 仍然不会上传提示词、回复内容、代码文件、本地路径或会话正文。"
+        ],
+        "en-US": [
+          "This update does not add any new uploaded fields.",
+          "Vibe Tree still does not upload prompts, replies, code files, local paths, or session text."
+        ]
+      },
+      "upgradeNotes": {
+        "zh-CN": [
+          "升级不会清空本机数据。",
+          "如果菜单栏小树仍然看不到，可能是系统菜单栏空间不足，可以先收起不常用的状态栏图标。"
+        ],
+        "en-US": [
+          "Upgrading does not clear local data.",
+          "If the menu bar tree is still not visible, the system menu bar may be out of space; hide less-used status items and try again."
+        ]
+      }
+    },
+    {
       "version": "0.7.1",
       "publishedAt": "2026-06-02",
       "fullReleaseUrl": "https://github.com/Olorinm/vibe-tree/releases/tag/v0.7.1",

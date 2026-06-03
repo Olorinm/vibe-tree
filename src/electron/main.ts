@@ -968,6 +968,7 @@ function createMenuBarWindow() {
       sandbox: false,
     },
   });
+  applyMenuBarWindowSpaceBehavior(menuBarWindow);
   menuBarWindow.webContents.setZoomFactor(1);
   menuBarWindow.webContents.on("zoom-changed", (event) => event.preventDefault());
   void menuBarWindow.webContents.setVisualZoomLevelLimits(1, 1);
@@ -1275,6 +1276,7 @@ function toggleMenuBarPopover() {
     window.hide();
     return;
   }
+  applyMenuBarWindowSpaceBehavior(window);
   positionMenuBarWindow(window);
   window.show();
   window.focus();
@@ -1283,6 +1285,11 @@ function toggleMenuBarPopover() {
 function hideMenuBarPopover() {
   if (!menuBarWindow || menuBarWindow.isDestroyed()) return;
   menuBarWindow.hide();
+}
+
+function applyMenuBarWindowSpaceBehavior(window: BrowserWindow) {
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setAlwaysOnTop(true, "pop-up-menu");
 }
 
 function positionMenuBarWindow(window: BrowserWindow) {

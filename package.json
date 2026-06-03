@@ -1,6 +1,6 @@
 {
   "name": "vibe-tree",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "productName": "Vibe Tree",
   "private": true,
   "type": "module",
@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && vite build",
     "edit:achievements": "node scripts/achievement-copy-editor.mjs",
     "smoke:electron": "node scripts/smoke-electron.mjs",
+    "test:codex-watcher": "npm run build && node scripts/test-codex-session-watcher.mjs",
     "verify:cloud-sync": "node scripts/verify-cloud-sync.mjs",
     "verify:worker-api": "node server/leaderboard-worker/scripts/verify-worker-api.mjs",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.json --noEmit",
