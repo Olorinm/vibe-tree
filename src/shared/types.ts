@@ -336,6 +336,7 @@ export interface Settings {
   opencodeSessionsDir?: string;
   geminiSessionsDir?: string;
   hermesSessionsDir?: string;
+  kimiSessionsDir?: string;
 }
 
 export interface LedgerFile {
@@ -409,6 +410,7 @@ export interface UsageStatus {
   opencodeSession: SessionMonitorStatus;
   geminiSession: SessionMonitorStatus;
   hermesSession: SessionMonitorStatus;
+  kimiSession: SessionMonitorStatus;
 }
 
 export interface SessionMonitorStatus {

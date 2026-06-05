@@ -41,8 +41,8 @@ interface UsageSnapshot {
 }
 
 interface AgentConfig {
-  source: "claude-session" | "openclaw-session" | "pi-session";
-  agent: "claude-code" | "openclaw" | "pi-agent";
+  source: "claude-session" | "openclaw-session" | "pi-session" | "kimi-session";
+  agent: "claude-code" | "openclaw" | "pi-agent" | "kimi-code";
   sessionsRoot: string;
   importHistoryEnv: string;
   stateFileName: string;
@@ -107,6 +107,8 @@ const DEFAULT_HERMES_STATE_DB = join(homedir(), ".hermes", "state.db");
 const INITIAL_SCAN_DELAY_MS = 2_500;
 const SCAN_BATCH_SIZE = 32;
 const SCAN_BATCH_DELAY_MS = 16;
+
+const DEFAULT_KIMI_ROOT = join(homedir(), ".kimi-code", "sessions");
 
 export function startClaudeSessionWatcher(options: SessionWatcherOptions) {
   return startAgentSessionWatcher(options, {
@@ -335,6 +337,18 @@ export function startHermesSessionWatcher(options: SessionWatcherOptions) {
     },
     getStatus: () => status,
   };
+}
+
+export function startKimiSessionWatcher(options: SessionWatcherOptions) {
+  return startAgentSessionWatcher(options, {
+    source: "kimi-session",
+    agent: "kimi-code",
+    sessionsRoot: options.sessionsRoot || process.env.VIBE_KIMI_SESSIONS_DIR || DEFAULT_KIMI_ROOT,
+    importHistoryEnv: "VIBE_KIMI_IMPORT_HISTORY",
+    stateFileName: "kimi-session-watcher.json",
+    pollIntervalMs: 10_000,
+    parseLine: parseKimiLine,
+  });
 }
 
 function startAgentSessionWatcher(options: SessionWatcherOptions, config: AgentConfig) {
@@ -916,6 +930,48 @@ function parsePiLine(line: string, filePath: string, lineOffset: number): UsageE
     totalTokens: tokens.inputTokens + tokens.outputTokens,
     streaming: false,
   };
+}
+
+function parseKimiLine(line: string, filePath: string, lineOffset: number): UsageEvent | undefined {
+  const parsed = parseJson(line);
+  if (!parsed || parsed.type !== "usage.record") return undefined;
+
+  const usage = asRecord(parsed.usage);
+  if (!usage) return undefined;
+
+  const inputTokens = numberValue(usage.inputOther);
+  const outputTokens = numberValue(usage.output);
+  const cacheReadTokens = numberValue(usage.inputCacheRead);
+  const cacheWriteTokens = numberValue(usage.inputCacheCreation);
+  const totalTokens = inputTokens + outputTokens;
+  if (totalTokens + cacheReadTokens + cacheWriteTokens <= 0) return undefined;
+
+  const rawModel = stringValue(parsed.model) || "";
+  const slashIdx = rawModel.lastIndexOf("/");
+  const model = slashIdx >= 0 ? rawModel.slice(slashIdx + 1) : rawModel || undefined;
+  const provider = slashIdx >= 0 ? rawModel.slice(0, slashIdx) : "kimi";
+  const agentId = kimiAgentIdFromPath(filePath);
+
+  return {
+    id: `kimi-session:${hash(`${filePath}:${lineOffset}`)}`,
+    createdAt: timestampToIso(parsed.time) || new Date().toISOString(),
+    source: "kimi-session",
+    agent: agentId ? `kimi-code:${agentId}` : "kimi-code",
+    provider,
+    model,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens,
+    streaming: false,
+  };
+}
+
+function kimiAgentIdFromPath(filePath: string): string | undefined {
+  // path pattern: .../agents/<agentId>/wire.jsonl
+  const match = filePath.match(/[/\\]agents[/\\]([^/\\]+)[/\\]wire\.jsonl$/);
+  return match?.[1];
 }
 
 function parseOpenCodeFile(filePath: string): UsageEvent | undefined {
