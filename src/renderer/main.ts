@@ -211,6 +211,13 @@ let socialGroupLeaderboard: SocialGroupLeaderboardData | null = null;
 let socialGroupLeaderboardLoading = false;
 const socialGroupLeaderboardCache = new Map<string, SocialGroupLeaderboardData>();
 let socialRenderKey = "";
+let ledgerEntriesSignatureCache:
+  | {
+      entries: LedgerEntry[];
+      installedAt: string | undefined;
+      signature: string;
+    }
+  | undefined;
 let socialProfileOpen = false;
 let socialProfileLoading = false;
 let socialProfileUserId: string | null = null;
@@ -3872,7 +3879,8 @@ function formatShareNumber(value: number) {
 function render() {
   if (!ledger || !tree || !gameBalance) return;
   const visibility = sourceVisibility();
-  const stats = statsCache.calculateStats(ledger.entries, tree, gameBalance, visibility.enabled, ledgerEntriesSignature());
+  const entriesSignature = ledgerEntriesSignature();
+  const stats = statsCache.calculateStats(ledger.entries, tree, gameBalance, visibility.enabled, entriesSignature);
   const leveledUp = lastRenderedLevel !== null && stats.level > lastRenderedLevel;
   if (leveledUp && lastRenderedLevel !== null) {
     pendingLevelUp = { from: lastRenderedLevel, to: stats.level };
@@ -3979,7 +3987,7 @@ function render() {
       lastHistoryChartKey = "";
     }
     lastHistoryChartKey = renderHistoryChart({
-      rows: statsCache.getSevenDayRows(ledger.entries, historyFilter, visibility, ledgerEntriesSignature()),
+      rows: statsCache.getSevenDayRows(ledger.entries, historyFilter, visibility, entriesSignature),
       filter: historyFilter,
       visibility,
       lastHistoryChartKey,
@@ -6884,6 +6892,9 @@ function text(selector: string, value: string) {
 
 function ledgerEntriesSignature() {
   if (!ledger) return "no-ledger";
+  if (ledgerEntriesSignatureCache?.entries === ledger.entries && ledgerEntriesSignatureCache.installedAt === ledger.installedAt) {
+    return ledgerEntriesSignatureCache.signature;
+  }
   const first = ledger.entries[0];
   const last = ledger.entries[ledger.entries.length - 1];
   const totals = ledger.entries.reduce(
@@ -6906,7 +6917,7 @@ function ledgerEntriesSignature() {
       sources: new Map<string, number>(),
     },
   );
-  return [
+  const signature = [
     ledger.entries.length,
     ledger.installedAt,
     totals.tokens,
@@ -6922,6 +6933,12 @@ function ledgerEntriesSignature() {
     last?.createdAt ?? "",
     last?.tokens ?? "",
   ].join(":");
+  ledgerEntriesSignatureCache = {
+    entries: ledger.entries,
+    installedAt: ledger.installedAt,
+    signature,
+  };
+  return signature;
 }
 
 function cloudModelStatsSignature() {
