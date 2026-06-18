@@ -104,6 +104,9 @@ const DEFAULT_OPENCODE_DB = defaultOpenCodeDbPath();
 const DEFAULT_OPENCODE_MESSAGES_ROOT = defaultOpenCodeMessagesRoot();
 const DEFAULT_GEMINI_ROOT = join(homedir(), ".gemini", "tmp");
 const DEFAULT_HERMES_STATE_DB = join(homedir(), ".hermes", "state.db");
+const INITIAL_SCAN_DELAY_MS = 2_500;
+const SCAN_BATCH_SIZE = 32;
+const SCAN_BATCH_DELAY_MS = 16;
 
 export function startClaudeSessionWatcher(options: SessionWatcherOptions) {
   return startAgentSessionWatcher(options, {
@@ -181,9 +184,29 @@ function startOpenCodeDbSessionWatcher(options: SessionWatcherOptions, dbPath: s
   };
 
   let closed = false;
+  let pollRunning = false;
+  let pollQueued = false;
+  let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const poll = () => {
+  const poll = async () => {
     if (closed) return;
+    if (pollRunning) {
+      pollQueued = true;
+      return;
+    }
+    pollRunning = true;
+    try {
+      do {
+        pollQueued = false;
+        runPoll();
+        if (pollQueued && !closed) await delay(SCAN_BATCH_DELAY_MS);
+      } while (pollQueued && !closed);
+    } finally {
+      pollRunning = false;
+    }
+  };
+
+  const runPoll = () => {
     status.exists = existsSync(dbPath);
     status.filesWatched = status.exists ? 1 : 0;
     status.lastScanAt = new Date().toISOString();
@@ -200,13 +223,14 @@ function startOpenCodeDbSessionWatcher(options: SessionWatcherOptions, dbPath: s
     options.onStatus?.(status);
   };
 
-  poll();
-  const timer = setInterval(poll, 10_000);
+  initialScanTimer = setTimeout(() => void poll(), INITIAL_SCAN_DELAY_MS);
+  const timer = setInterval(() => void poll(), 10_000);
 
   return {
     close: () => {
       closed = true;
       status.running = false;
+      if (initialScanTimer) clearTimeout(initialScanTimer);
       clearInterval(timer);
       writeState(statePath, state);
       options.onStatus?.(status);
@@ -252,9 +276,29 @@ export function startHermesSessionWatcher(options: SessionWatcherOptions) {
   };
 
   let closed = false;
+  let pollRunning = false;
+  let pollQueued = false;
+  let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const poll = () => {
+  const poll = async () => {
     if (closed) return;
+    if (pollRunning) {
+      pollQueued = true;
+      return;
+    }
+    pollRunning = true;
+    try {
+      do {
+        pollQueued = false;
+        runPoll();
+        if (pollQueued && !closed) await delay(SCAN_BATCH_DELAY_MS);
+      } while (pollQueued && !closed);
+    } finally {
+      pollRunning = false;
+    }
+  };
+
+  const runPoll = () => {
     status.exists = existsSync(stateDbPath);
     status.filesWatched = status.exists ? 1 : 0;
     status.lastScanAt = new Date().toISOString();
@@ -277,13 +321,14 @@ export function startHermesSessionWatcher(options: SessionWatcherOptions) {
     options.onStatus?.(status);
   };
 
-  poll();
-  const timer = setInterval(poll, 10_000);
+  initialScanTimer = setTimeout(() => void poll(), INITIAL_SCAN_DELAY_MS);
+  const timer = setInterval(() => void poll(), 10_000);
 
   return {
     close: () => {
       closed = true;
       status.running = false;
+      if (initialScanTimer) clearTimeout(initialScanTimer);
       clearInterval(timer);
       writeState(statePath, state);
       options.onStatus?.(status);
@@ -314,9 +359,28 @@ function startAgentSessionWatcher(options: SessionWatcherOptions, config: AgentC
   };
 
   let closed = false;
+  let pollRunning = false;
+  let pollQueued = false;
+  let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const poll = () => {
+  const poll = async () => {
     if (closed) return;
+    if (pollRunning) {
+      pollQueued = true;
+      return;
+    }
+    pollRunning = true;
+    try {
+      do {
+        pollQueued = false;
+        await runPoll();
+      } while (pollQueued && !closed);
+    } finally {
+      pollRunning = false;
+    }
+  };
+
+  const runPoll = async () => {
     status.exists = existsSync(config.sessionsRoot);
     status.lastScanAt = new Date().toISOString();
     if (!status.exists) {
@@ -326,11 +390,12 @@ function startAgentSessionWatcher(options: SessionWatcherOptions, config: AgentC
 
     const files = listJsonlFiles(config.sessionsRoot);
     status.filesWatched = files.length;
-    for (const filePath of files) {
+    options.onStatus?.(status);
+    for (let index = 0; index < files.length; index += 1) {
+      if (closed) return;
       const imported = scanFile(
-        filePath,
+        files[index],
         state,
-        statePath,
         config,
         { importHistory, watcherStartedAt, historyStartAtMs },
         options.onUsage,
@@ -339,17 +404,24 @@ function startAgentSessionWatcher(options: SessionWatcherOptions, config: AgentC
         status.eventsImported += imported;
         status.lastEventAt = new Date().toISOString();
       }
+      if ((index + 1) % SCAN_BATCH_SIZE === 0) {
+        writeState(statePath, state);
+        options.onStatus?.(status);
+        await delay(SCAN_BATCH_DELAY_MS);
+      }
     }
+    writeState(statePath, state);
     options.onStatus?.(status);
   };
 
-  poll();
-  const timer = setInterval(poll, config.pollIntervalMs);
+  initialScanTimer = setTimeout(() => void poll(), INITIAL_SCAN_DELAY_MS);
+  const timer = setInterval(() => void poll(), config.pollIntervalMs);
 
   return {
     close: () => {
       closed = true;
       status.running = false;
+      if (initialScanTimer) clearTimeout(initialScanTimer);
       clearInterval(timer);
       writeState(statePath, state);
       options.onStatus?.(status);
@@ -380,9 +452,28 @@ function startJsonAgentSessionWatcher(options: SessionWatcherOptions, config: Js
   };
 
   let closed = false;
+  let pollRunning = false;
+  let pollQueued = false;
+  let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const poll = () => {
+  const poll = async () => {
     if (closed) return;
+    if (pollRunning) {
+      pollQueued = true;
+      return;
+    }
+    pollRunning = true;
+    try {
+      do {
+        pollQueued = false;
+        await runPoll();
+      } while (pollQueued && !closed);
+    } finally {
+      pollRunning = false;
+    }
+  };
+
+  const runPoll = async () => {
     status.exists = existsSync(config.sessionsRoot);
     status.lastScanAt = new Date().toISOString();
     if (!status.exists) {
@@ -392,11 +483,12 @@ function startJsonAgentSessionWatcher(options: SessionWatcherOptions, config: Js
 
     const files = listJsonFiles(config.sessionsRoot, config.fileExtensions);
     status.filesWatched = files.length;
-    for (const filePath of files) {
+    options.onStatus?.(status);
+    for (let index = 0; index < files.length; index += 1) {
+      if (closed) return;
       const imported = scanJsonFile(
-        filePath,
+        files[index],
         state,
-        statePath,
         config,
         { importHistory, watcherStartedAt, historyStartAtMs },
         options.onUsage,
@@ -405,17 +497,24 @@ function startJsonAgentSessionWatcher(options: SessionWatcherOptions, config: Js
         status.eventsImported += imported;
         status.lastEventAt = new Date().toISOString();
       }
+      if ((index + 1) % SCAN_BATCH_SIZE === 0) {
+        writeState(statePath, state);
+        options.onStatus?.(status);
+        await delay(SCAN_BATCH_DELAY_MS);
+      }
     }
+    writeState(statePath, state);
     options.onStatus?.(status);
   };
 
-  poll();
-  const timer = setInterval(poll, config.pollIntervalMs);
+  initialScanTimer = setTimeout(() => void poll(), INITIAL_SCAN_DELAY_MS);
+  const timer = setInterval(() => void poll(), config.pollIntervalMs);
 
   return {
     close: () => {
       closed = true;
       status.running = false;
+      if (initialScanTimer) clearTimeout(initialScanTimer);
       clearInterval(timer);
       writeState(statePath, state);
       options.onStatus?.(status);
@@ -427,7 +526,6 @@ function startJsonAgentSessionWatcher(options: SessionWatcherOptions, config: Js
 function scanFile(
   filePath: string,
   state: WatchState,
-  statePath: string,
   config: AgentConfig,
   settings: { importHistory: boolean; watcherStartedAt: number; historyStartAtMs?: number },
   onUsage: (event: UsageEvent) => void,
@@ -451,14 +549,12 @@ function scanFile(
   });
 
   state.files[filePath] = stats.size;
-  writeState(statePath, state);
   return imported;
 }
 
 function scanJsonFile(
   filePath: string,
   state: WatchState,
-  statePath: string,
   config: JsonAgentConfig,
   settings: { importHistory: boolean; watcherStartedAt: number; historyStartAtMs?: number },
   onUsage: (event: UsageEvent) => void,
@@ -471,12 +567,10 @@ function scanJsonFile(
 
   if (previousMtime === undefined && shouldSkipInitialJsonFile(filePath, stats, settings)) {
     state.files[filePath] = stats.mtimeMs;
-    writeState(statePath, state);
     return 0;
   }
 
   state.files[filePath] = stats.mtimeMs;
-  writeState(statePath, state);
 
   const events = toUsageEvents(config.parseFile(filePath));
   let imported = 0;
@@ -491,7 +585,6 @@ function scanJsonFile(
     onUsage(event);
     imported += 1;
   }
-  if (imported > 0 || events.length > 0) writeState(statePath, state);
   return imported;
 }
 
@@ -725,6 +818,10 @@ function scanNewLines(filePath: string, start: number, end: number, onLine: (lin
   }
 
   return imported;
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function parseClaudeLine(line: string, filePath: string, lineOffset: number): UsageEvent | undefined {

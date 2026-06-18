@@ -165,6 +165,8 @@ let trayMenuReopenTimer: ReturnType<typeof setTimeout> | null = null;
 let ledgerBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
 let ledger: LedgerFile = { entries: [], settings: DEFAULT_SETTINGS, installedAt: startOfLocalDayIso(new Date()) };
 let ledgerEntryIds = new Set<string>();
+let pendingUsageEntries: LedgerEntry[] = [];
+let pendingUsageFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let achievementState: AchievementState = { unlocked: [] };
 let codexSessionWatcher: ReturnType<typeof startCodexSessionWatcher> | null = null;
 let claudeSessionWatcher: ReturnType<typeof startClaudeSessionWatcher> | null = null;
@@ -414,7 +416,7 @@ function setTreeStartMode(mode: "new" | "cloud") {
   ledger.entries = ledger.entries.filter((entry) =>
     mode === "cloud" ? entryBelongsToCurrentTree(entry, installedAt) : entryTime(entry) >= Date.parse(installedAt),
   );
-  rebuildLedgerEntryIndex();
+  resetLedgerEntryIds();
   updateSettings({ treeStartMode: mode });
 }
 
@@ -1821,6 +1823,29 @@ function cleanCloudModelLabel(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, 64) : undefined;
 }
 
+function resetLedgerEntryIds() {
+  ledgerEntryIds = new Set(ledger.entries.map((entry) => entry.id));
+}
+
+function schedulePendingUsageFlush() {
+  if (pendingUsageFlushTimer) return;
+  pendingUsageFlushTimer = setTimeout(flushPendingUsageEntries, 1_000);
+}
+
+function flushPendingUsageEntries() {
+  if (pendingUsageFlushTimer) {
+    clearTimeout(pendingUsageFlushTimer);
+    pendingUsageFlushTimer = null;
+  }
+  if (!pendingUsageEntries.length) return;
+
+  const entries = pendingUsageEntries;
+  pendingUsageEntries = [];
+  ledger.entries = entries.reverse().concat(ledger.entries);
+  scheduleLedgerBroadcast();
+  leaderboardService.scheduleCloudSyncSoon();
+}
+
 function appendUsageEvent(event: UsageEvent) {
   if (ledgerEntryIds.has(event.id)) return;
 
@@ -1840,14 +1865,14 @@ function appendUsageEvent(event: UsageEvent) {
     deviceId: ensureCloudSyncDeviceId(),
   };
   entry.tokens = countedTokensForEntry(entry);
-  ledger.entries.unshift(entry);
   ledgerEntryIds.add(entry.id);
+  pendingUsageEntries.push(entry);
   appendUsageEntryToStore(entry);
-  scheduleLedgerBroadcast();
-  leaderboardService.scheduleCloudSyncSoon();
+  schedulePendingUsageFlush();
 }
 
 function appendRemoteEntries(entries: LedgerEntry[]) {
+  flushPendingUsageEntries();
   const existingById = new Map(ledger.entries.map((entry) => [entry.id, entry]));
   const existingByFingerprint = new Map<string, LedgerEntry>();
   for (const entry of ledger.entries) {
@@ -1893,7 +1918,7 @@ function appendRemoteEntries(entries: LedgerEntry[]) {
     const deduped = dedupeCloudMirroredEntries(ledger.entries);
     if (!deduped.removedCount) return 0;
     ledger.entries = deduped.entries;
-    rebuildLedgerEntryIndex();
+    resetLedgerEntryIds();
     rewriteUsageEntriesStore(ledger.entries);
     broadcastLedgerNow();
     return deduped.removedCount;
@@ -1902,7 +1927,7 @@ function appendRemoteEntries(entries: LedgerEntry[]) {
   const kept = ledger.entries.filter((entry) => !repairedIds.has(entry.id));
   const deduped = dedupeCloudMirroredEntries([...accepted, ...repaired, ...kept]);
   ledger.entries = deduped.entries;
-  rebuildLedgerEntryIndex();
+  resetLedgerEntryIds();
   if (repaired.length || deduped.removedCount) rewriteUsageEntriesStore(ledger.entries);
   broadcastLedgerNow();
   return accepted.length + repaired.length + deduped.removedCount;
@@ -2144,10 +2169,6 @@ function broadcast(channel: string, ...args: unknown[]) {
     if (!window || window.isDestroyed()) continue;
     window.webContents.send(channel, ...args);
   }
-}
-
-function rebuildLedgerEntryIndex() {
-  ledgerEntryIds = new Set(ledger.entries.map((entry) => entry.id));
 }
 
 function broadcastLedgerNow() {
@@ -3000,7 +3021,7 @@ app.whenReady().then(async () => {
   }
   Menu.setApplicationMenu(null);
   ledger = readLedger();
-  rebuildLedgerEntryIndex();
+  resetLedgerEntryIds();
   updateStatus = {
     ...updateStatus,
     currentVersion: currentAppVersion(),
@@ -3014,7 +3035,7 @@ app.whenReady().then(async () => {
     createManagerWindow();
   }
   createTray();
-  setTimeout(startUsageWatchers, 500);
+  setTimeout(startUsageWatchers, 3_000);
   startUpdateChecks();
   leaderboardService.startSync();
 
@@ -3029,6 +3050,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  flushPendingUsageEntries();
   stopUsageWatchers();
   if (updateCheckTimer) clearTimeout(updateCheckTimer);
   if (ledgerBroadcastTimer) clearTimeout(ledgerBroadcastTimer);
