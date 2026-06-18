@@ -2,6 +2,53 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.7.4",
+      "publishedAt": "2026-06-18",
+      "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.7.4",
+      "title": {
+        "zh-CN": "Vibe Tree v0.7.4",
+        "en-US": "Vibe Tree v0.7.4"
+      },
+      "summary": {
+        "zh-CN": "本次更新继续优化启动稳定性：长时间未打开、累计大量 Codex 或 Claude 会话后，Vibe Tree 会延后并分批补扫本地 Token，减少打开时的卡顿；继续或复制旧 Codex 会话的统计口径也会保持正确。",
+        "en-US": "This update further improves startup stability: after Vibe Tree has been closed for a while and many Codex or Claude sessions have accumulated, local token backfills now start later and run in batches, reducing startup stalls while keeping resumed or duplicated Codex sessions counted correctly."
+      },
+      "highlights": {
+        "zh-CN": [
+          "启动时会先让主界面出现，再延后扫描本地会话数据。",
+          "Codex、Claude 等本地会话会分批读取，避免一次性占满主进程。",
+          "大量补扫的 Token 会合并刷新界面，减少短时间 CPU 峰值。",
+          "继续或复制旧 Codex 会话时，旧历史不会算成新增；之后真正产生的新 Token 仍会正常计入。"
+        ],
+        "en-US": [
+          "The main window gets a chance to appear before local session scanning begins.",
+          "Codex, Claude, and other local session sources are scanned in batches instead of monopolizing the main process.",
+          "Large token backfills now refresh the UI in batches, reducing short CPU spikes.",
+          "Resumed or duplicated Codex sessions still ignore carried-over history while counting real new tokens afterward."
+        ]
+      },
+      "fixes": {
+        "zh-CN": [
+          "修复长时间未打开后重新启动，积累大量本地会话时可能卡顿很久的问题。",
+          "修复 Claude 等非 Codex 来源在启动补扫时仍可能一次性同步扫完大量文件的问题。",
+          "修复大量本地用量补扫时，内存数据逐条插入和逐条刷新带来的额外压力。"
+        ],
+        "en-US": [
+          "Fixed long startup stalls after many local sessions accumulate while Vibe Tree is closed.",
+          "Fixed non-Codex sources such as Claude still scanning many files synchronously during startup backfills.",
+          "Fixed extra pressure from inserting and refreshing large local usage backfills one entry at a time."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "本次更新没有新增上传内容。"
+        ],
+        "en-US": [
+          "This update does not add any uploaded content."
+        ]
+      }
+    },
+    {
       "version": "0.7.3",
       "publishedAt": "2026-06-18",
       "fullReleaseUrl": "https://github.com/Olorinm/vibe-tree/releases/tag/v0.7.3",
