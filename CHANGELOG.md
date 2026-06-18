@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-18 (v0.7.4)
+
+- Delayed and batched startup session watcher scans so the app can paint before large local Codex, Claude, and other agent folders are backfilled.
+- Kept Codex fork/resume accounting on the parent cumulative-token baseline while adding file-level yielding and batched watcher state writes.
+- Batched imported usage entries before merging them into the in-memory ledger, reducing CPU spikes during large local backfills.
+
 ## 2026-06-18 (v0.7.3)
 
 - Made Codex session scanning yield in small slices so large local session folders do not monopolize the Electron main process during startup.
