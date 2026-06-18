@@ -2,6 +2,67 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.7.3",
+      "publishedAt": "2026-06-18",
+      "fullReleaseUrl": "https://github.com/Olorinm/vibe-tree/releases/tag/v0.7.3",
+      "title": {
+        "zh-CN": "Vibe Tree v0.7.3",
+        "en-US": "Vibe Tree v0.7.3"
+      },
+      "summary": {
+        "zh-CN": "本次更新是 v0.7.2 之后的稳定性补丁：启动时读取大型 Codex 会话目录更平滑，补扫用量时不会反复刷新整个界面；成就页的新成就角标也会浮在导航上方，不再被相邻标签遮住。",
+        "en-US": "This stability patch follows v0.7.2: startup is smoother when reading large Codex session folders, usage backfills no longer refresh the whole UI for every imported event, and the new-achievement badge floats above the navigation without being covered by neighboring tabs."
+      },
+      "highlights": {
+        "zh-CN": [
+          "Codex 会话扫描改成分片执行，读取大型本地会话目录时不应该再长时间卡住主进程。",
+          "本地补扫新 Token 时会合并界面刷新，减少启动后短时间内的 CPU 峰值。",
+          "数据来源开关现在也会控制对应监听器；关闭某个来源后，它不会继续在后台扫描。",
+          "成就页的新成就角标保持浮出显示，并且不会再被“排行榜”等相邻标签遮住。"
+        ],
+        "en-US": [
+          "Codex session scanning now yields in small slices, so large local session folders should no longer block the main process for long stretches.",
+          "Local token backfills now batch UI refreshes, reducing short CPU spikes after startup.",
+          "Source toggles now also control their background watchers; disabled sources stop being scanned.",
+          "The new-achievement badge keeps its floating placement and is no longer covered by neighboring tabs such as Leaderboard."
+        ]
+      },
+      "fixes": {
+        "zh-CN": [
+          "修复大型 Codex 本地数据目录下，启动 Vibe Tree 可能让电脑明显卡顿的问题。",
+          "修复补扫多条用量记录时，主进程逐条查重并逐条广播完整数据导致界面反复重算的问题。",
+          "修复禁用来源后，后台监听器仍可能继续扫描该来源的问题。",
+          "修复成就导航角标被相邻标签遮挡的问题。"
+        ],
+        "en-US": [
+          "Fixed Vibe Tree startup causing noticeable system stalls with large local Codex data folders.",
+          "Fixed usage backfills repeatedly deduplicating and broadcasting the full ledger for every imported event.",
+          "Fixed disabled sources still being scanned by background watchers.",
+          "Fixed the achievement navigation badge being covered by adjacent tabs."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "本次更新没有新增上传字段。",
+          "Vibe Tree 仍然不会上传提示词、回复内容、代码文件、本地路径或会话正文。"
+        ],
+        "en-US": [
+          "This release does not add any uploaded fields.",
+          "Vibe Tree still does not upload prompts, replies, code files, local paths, or session text."
+        ]
+      },
+      "upgradeNotes": {
+        "zh-CN": [
+          "升级不会清空本机数据。",
+          "如果你之前因为启动卡顿而关闭了某些数据来源，可以在设置页重新按需打开。"
+        ],
+        "en-US": [
+          "Upgrading does not clear local data.",
+          "If you previously disabled sources because startup felt heavy, you can re-enable only the sources you want from Settings."
+        ]
+      }
+    },
+    {
       "version": "0.7.2",
       "publishedAt": "2026-06-04",
       "fullReleaseUrl": "https://github.com/Olorinm/vibe-tree/releases/tag/v0.7.2",

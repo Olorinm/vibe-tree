@@ -57,6 +57,7 @@ interface ParsedTokenEvent extends UsageEvent {
 
 const POLL_INTERVAL_MS = 10_000;
 const READ_CHUNK_SIZE = 64 * 1024;
+const SCAN_YIELD_INTERVAL_MS = 25;
 const DEFAULT_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
 const WATCH_STATE_VERSION = 6;
 const SESSION_META_READ_LIMIT = 2 * 1024 * 1024;
@@ -89,34 +90,56 @@ export function startCodexSessionWatcher(options: CodexSessionWatcherOptions) {
   };
 
   let closed = false;
+  let polling = false;
 
-  const poll = () => {
-    if (closed) return;
-    status.exists = existsSync(sessionsRoot);
-    status.lastScanAt = new Date().toISOString();
-    if (!status.exists) {
-      options.onStatus?.(status);
-      return;
-    }
-    const files = listJsonlFiles(sessionsRoot);
-    status.filesWatched = files.length;
-    for (const filePath of files) {
-      const imported = scanFile(filePath, state, statePath, options, {
-        importHistory,
-        watcherStartedAt,
-        historyStartAtMs,
-        sessionsRoot,
-      });
-      if (imported > 0) {
-        status.eventsImported += imported;
-        status.lastEventAt = new Date().toISOString();
+  const poll = async () => {
+    if (closed || polling) return;
+    polling = true;
+    let nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
+    try {
+      status.exists = existsSync(sessionsRoot);
+      status.lastScanAt = new Date().toISOString();
+      if (!status.exists) {
+        options.onStatus?.(status);
+        return;
       }
+      const files = listJsonlFiles(sessionsRoot);
+      status.filesWatched = files.length;
+      for (const filePath of files) {
+        if (closed) return;
+        const imported = await scanFile(filePath, state, statePath, options, {
+          importHistory,
+          watcherStartedAt,
+          historyStartAtMs,
+          sessionsRoot,
+          shouldYield: () => Date.now() >= nextYieldAt,
+          onYield: async () => {
+            await yieldToEventLoop();
+            nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
+          },
+        });
+        if (imported > 0) {
+          status.eventsImported += imported;
+          status.lastEventAt = new Date().toISOString();
+        }
+        if (Date.now() >= nextYieldAt) {
+          await yieldToEventLoop();
+          nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
+        }
+      }
+      options.onStatus?.(status);
+    } catch (error) {
+      console.error("Codex session watcher scan failed", error);
+      options.onStatus?.(status);
+    } finally {
+      polling = false;
     }
-    options.onStatus?.(status);
   };
 
-  poll();
-  const timer = setInterval(poll, POLL_INTERVAL_MS);
+  void poll();
+  const timer = setInterval(() => {
+    void poll();
+  }, POLL_INTERVAL_MS);
 
   return {
     close: () => {
@@ -130,13 +153,20 @@ export function startCodexSessionWatcher(options: CodexSessionWatcherOptions) {
   };
 }
 
-function scanFile(
+async function scanFile(
   filePath: string,
   state: WatchState,
   statePath: string,
   options: CodexSessionWatcherOptions,
-  settings: { importHistory: boolean; watcherStartedAt: number; historyStartAtMs?: number; sessionsRoot: string },
-): number {
+  settings: {
+    importHistory: boolean;
+    watcherStartedAt: number;
+    historyStartAtMs?: number;
+    sessionsRoot: string;
+    shouldYield?: () => boolean;
+    onYield?: () => Promise<void>;
+  },
+): Promise<number> {
   let imported = 0;
   const stats = statSync(filePath);
   const previousOffset = state.files[filePath];
@@ -161,55 +191,61 @@ function scanFile(
   }
 
   let currentModel = state.currentModels[filePath];
-  imported += scanNewLines(filePath, offset, stats.size, (line, lineOffset) => {
-    const turnContext = parseCodexTurnContextLine(line);
-    if (turnContext) {
-      currentModel = turnContext.model ?? currentModel;
-    }
-    const event = parseCodexTokenCountLine(line, filePath, lineOffset, currentModel);
-    if (event) {
-      if (isBeforeHistoryStart(event.createdAt, settings.historyStartAtMs)) {
-        const baselineUsage = event.cumulativeUsage ?? event.deltaUsage;
-        if (baselineUsage) {
-          state.cumulativeTokens[event.cumulativeKey] = baselineUsage;
-        }
-        return 0;
+  imported += await scanNewLines(
+    filePath,
+    offset,
+    stats.size,
+    (line, lineOffset) => {
+      const turnContext = parseCodexTurnContextLine(line);
+      if (turnContext) {
+        currentModel = turnContext.model ?? currentModel;
       }
+      const event = parseCodexTokenCountLine(line, filePath, lineOffset, currentModel);
+      if (event) {
+        if (isBeforeHistoryStart(event.createdAt, settings.historyStartAtMs)) {
+          const baselineUsage = event.cumulativeUsage ?? event.deltaUsage;
+          if (baselineUsage) {
+            state.cumulativeTokens[event.cumulativeKey] = baselineUsage;
+          }
+          return 0;
+        }
 
-      const exactPreviousTotal = normalizeStoredUsage(state.cumulativeTokens[event.cumulativeKey]);
-      const legacyPreviousTotal = undefined;
-      const previousTotal = exactPreviousTotal ?? legacyPreviousTotal;
-      const hasAcceptedKey = Boolean(state.acceptedCumulativeKeys[event.cumulativeKey]);
-      if (!hasAcceptedKey) {
-        const baselineUsage = event.cumulativeUsage ?? event.deltaUsage;
-        if (baselineUsage) {
-          state.cumulativeTokens[event.cumulativeKey] = baselineUsage;
+        const exactPreviousTotal = normalizeStoredUsage(state.cumulativeTokens[event.cumulativeKey]);
+        const legacyPreviousTotal = undefined;
+        const previousTotal = exactPreviousTotal ?? legacyPreviousTotal;
+        const hasAcceptedKey = Boolean(state.acceptedCumulativeKeys[event.cumulativeKey]);
+        if (!hasAcceptedKey) {
+          const baselineUsage = event.cumulativeUsage ?? event.deltaUsage;
+          if (baselineUsage) {
+            state.cumulativeTokens[event.cumulativeKey] = baselineUsage;
+          }
+          state.acceptedCumulativeKeys[event.cumulativeKey] = true;
+          return 0;
         }
-        state.acceptedCumulativeKeys[event.cumulativeKey] = true;
-        return 0;
+        const deltaUsage = previousTotal
+          ? getDeltaUsage(event, exactPreviousTotal, legacyPreviousTotal)
+          : event.deltaUsage ?? event.cumulativeUsage;
+        if (event.cumulativeUsage) {
+          state.cumulativeTokens[event.cumulativeKey] = maxUsage(event.cumulativeUsage, previousTotal);
+        } else if (event.deltaUsage) {
+          state.cumulativeTokens[event.cumulativeKey] = event.deltaUsage;
+        }
+        if (!deltaUsage) return 0;
+        const totalTokens = usageTotal(deltaUsage);
+        if (totalTokens <= 0) return 0;
+        options.onUsage({
+          ...event,
+          inputTokens: deltaUsage.inputTokens,
+          outputTokens: deltaUsage.outputTokens,
+          cacheReadTokens: deltaUsage.cacheReadTokens,
+          totalTokens,
+        });
+        return 1;
       }
-      const deltaUsage = previousTotal
-        ? getDeltaUsage(event, exactPreviousTotal, legacyPreviousTotal)
-        : event.deltaUsage ?? event.cumulativeUsage;
-      if (event.cumulativeUsage) {
-        state.cumulativeTokens[event.cumulativeKey] = maxUsage(event.cumulativeUsage, previousTotal);
-      } else if (event.deltaUsage) {
-        state.cumulativeTokens[event.cumulativeKey] = event.deltaUsage;
-      }
-      if (!deltaUsage) return 0;
-      const totalTokens = usageTotal(deltaUsage);
-      if (totalTokens <= 0) return 0;
-      options.onUsage({
-        ...event,
-        inputTokens: deltaUsage.inputTokens,
-        outputTokens: deltaUsage.outputTokens,
-        cacheReadTokens: deltaUsage.cacheReadTokens,
-        totalTokens,
-      });
-      return 1;
-    }
-    return 0;
-  });
+      return 0;
+    },
+    settings,
+  );
 
   state.files[filePath] = stats.size;
   if (currentModel) state.currentModels[filePath] = currentModel;
@@ -217,7 +253,13 @@ function scanFile(
   return imported;
 }
 
-function scanNewLines(filePath: string, start: number, end: number, onLine: (line: string, lineOffset: number) => number) {
+async function scanNewLines(
+  filePath: string,
+  start: number,
+  end: number,
+  onLine: (line: string, lineOffset: number) => number,
+  yieldOptions: { shouldYield?: () => boolean; onYield?: () => Promise<void> } = {},
+) {
   const fd = openSync(filePath, "r");
   const buffer = Buffer.allocUnsafe(READ_CHUNK_SIZE);
   const decoder = new StringDecoder("utf8");
@@ -245,6 +287,9 @@ function scanNewLines(filePath: string, start: number, end: number, onLine: (lin
         pending = pending.slice(newlineIndex + 1);
         newlineIndex = pending.indexOf("\n");
       }
+      if (yieldOptions.shouldYield?.()) {
+        await yieldOptions.onYield?.();
+      }
     }
 
     pending += decoder.end();
@@ -256,6 +301,10 @@ function scanNewLines(filePath: string, start: number, end: number, onLine: (lin
   }
 
   return imported;
+}
+
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 function initialOffset(

@@ -1810,6 +1810,7 @@ h4 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
+  overflow: visible;
 }
 
 .side-tabs button {
@@ -1824,10 +1825,11 @@ h4 {
   font-size: 0.78rem;
   font-weight: 700;
   padding: 0 8px;
-  overflow: hidden;
+  overflow: visible;
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: all 0.1s;
+  z-index: 1;
 }
 
 html[lang^="en"] .side-tabs {
@@ -1854,6 +1856,10 @@ html[lang^="en"] .side-tabs {
   line-height: 1;
 }
 
+.side-tabs button.has-new-achievements {
+  z-index: 3;
+}
+
 .side-tabs button:hover {
   color: var(--ink);
   border-color: var(--leaf);
@@ -1864,6 +1870,7 @@ html[lang^="en"] .side-tabs {
   border-color: var(--leaf);
   background: var(--leaf);
   box-shadow: var(--pixel-shadow), inset 0 -2px 0 rgba(0, 0, 0, 0.2);
+  z-index: 2;
 }
 
 /* ============================

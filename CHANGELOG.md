@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-18 (v0.7.3)
+
+- Made Codex session scanning yield in small slices so large local session folders do not monopolize the Electron main process during startup.
+- Batched ledger broadcasts and switched local usage dedupe to an ID index so backfilled usage records do not trigger one full UI refresh per event.
+- Made source enablement control the corresponding background watcher, so disabled sources stop being scanned.
+- Fixed the achievement tab's new-achievement badge so it remains floated above the navigation without being covered by neighboring tabs.
+
 ## 2026-05-24 (v0.5.5)
 
 - 新增 Pi Agent Token 统计，自动读取 `~/.pi/agent/sessions/**/*.jsonl` 会话记录。
