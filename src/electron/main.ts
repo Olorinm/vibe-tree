@@ -55,6 +55,7 @@ const UPDATE_GIT_TIMEOUT_MS = 2 * 60 * 1000;
 const UPDATE_NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const UPDATE_BUILD_TIMEOUT_MS = 3 * 60 * 1000;
 const UPDATE_SMOKE_TIMEOUT_MS = 45_000;
+const LEDGER_BROADCAST_DEBOUNCE_MS = 250;
 const UPDATE_LATEST_RELEASE_URL = "https://api.github.com/repos/Olorinm/vibe-tree/releases/latest";
 const UPDATE_TAGS_URL = "https://api.github.com/repos/Olorinm/vibe-tree/tags?per_page=20";
 const UPDATE_PAGE_URL = "https://github.com/Olorinm/vibe-tree/releases";
@@ -161,7 +162,9 @@ let updateStatus: UpdateStatus = {
 let tray: Tray | null = null;
 let trayContextMenu: ReturnType<typeof Menu.buildFromTemplate> | null = null;
 let trayMenuReopenTimer: ReturnType<typeof setTimeout> | null = null;
+let ledgerBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
 let ledger: LedgerFile = { entries: [], settings: DEFAULT_SETTINGS, installedAt: startOfLocalDayIso(new Date()) };
+let ledgerEntryIds = new Set<string>();
 let achievementState: AchievementState = { unlocked: [] };
 let codexSessionWatcher: ReturnType<typeof startCodexSessionWatcher> | null = null;
 let claudeSessionWatcher: ReturnType<typeof startClaudeSessionWatcher> | null = null;
@@ -411,6 +414,7 @@ function setTreeStartMode(mode: "new" | "cloud") {
   ledger.entries = ledger.entries.filter((entry) =>
     mode === "cloud" ? entryBelongsToCurrentTree(entry, installedAt) : entryTime(entry) >= Date.parse(installedAt),
   );
+  rebuildLedgerEntryIndex();
   updateSettings({ treeStartMode: mode });
 }
 
@@ -1729,12 +1733,12 @@ function updateSettings(partial: Partial<Settings>) {
     previous.piSessionsDir !== ledger.settings.piSessionsDir ||
     previous.opencodeSessionsDir !== ledger.settings.opencodeSessionsDir ||
     previous.geminiSessionsDir !== ledger.settings.geminiSessionsDir ||
-    previous.hermesSessionsDir !== ledger.settings.hermesSessionsDir
+    previous.hermesSessionsDir !== ledger.settings.hermesSessionsDir ||
+    previous.enabledSourceIds.join(",") !== ledger.settings.enabledSourceIds.join(",")
   ) {
     restartUsageWatchers();
   }
-  refreshTrayMenu();
-  broadcast("bonsai:ledger", ledger);
+  broadcastLedgerNow();
 }
 
 function ensureCloudSyncDeviceId() {
@@ -1818,7 +1822,7 @@ function cleanCloudModelLabel(value: unknown) {
 }
 
 function appendUsageEvent(event: UsageEvent) {
-  if (ledger.entries.some((entry) => entry.id === event.id)) return;
+  if (ledgerEntryIds.has(event.id)) return;
 
   const entry: LedgerEntry = {
     id: event.id,
@@ -1837,9 +1841,9 @@ function appendUsageEvent(event: UsageEvent) {
   };
   entry.tokens = countedTokensForEntry(entry);
   ledger.entries.unshift(entry);
+  ledgerEntryIds.add(entry.id);
   appendUsageEntryToStore(entry);
-  broadcast("bonsai:ledger", ledger);
-  refreshTrayMenu();
+  scheduleLedgerBroadcast();
   leaderboardService.scheduleCloudSyncSoon();
 }
 
@@ -1889,18 +1893,18 @@ function appendRemoteEntries(entries: LedgerEntry[]) {
     const deduped = dedupeCloudMirroredEntries(ledger.entries);
     if (!deduped.removedCount) return 0;
     ledger.entries = deduped.entries;
+    rebuildLedgerEntryIndex();
     rewriteUsageEntriesStore(ledger.entries);
-    broadcast("bonsai:ledger", ledger);
-    refreshTrayMenu();
+    broadcastLedgerNow();
     return deduped.removedCount;
   }
   const repairedIds = new Set(repaired.map((entry) => entry.id));
   const kept = ledger.entries.filter((entry) => !repairedIds.has(entry.id));
   const deduped = dedupeCloudMirroredEntries([...accepted, ...repaired, ...kept]);
   ledger.entries = deduped.entries;
+  rebuildLedgerEntryIndex();
   if (repaired.length || deduped.removedCount) rewriteUsageEntriesStore(ledger.entries);
-  broadcast("bonsai:ledger", ledger);
-  refreshTrayMenu();
+  broadcastLedgerNow();
   return accepted.length + repaired.length + deduped.removedCount;
 }
 
@@ -2140,6 +2144,28 @@ function broadcast(channel: string, ...args: unknown[]) {
     if (!window || window.isDestroyed()) continue;
     window.webContents.send(channel, ...args);
   }
+}
+
+function rebuildLedgerEntryIndex() {
+  ledgerEntryIds = new Set(ledger.entries.map((entry) => entry.id));
+}
+
+function broadcastLedgerNow() {
+  if (ledgerBroadcastTimer) {
+    clearTimeout(ledgerBroadcastTimer);
+    ledgerBroadcastTimer = null;
+  }
+  refreshTrayMenu();
+  broadcast("bonsai:ledger", ledger);
+}
+
+function scheduleLedgerBroadcast() {
+  if (ledgerBroadcastTimer) return;
+  ledgerBroadcastTimer = setTimeout(() => {
+    ledgerBroadcastTimer = null;
+    refreshTrayMenu();
+    broadcast("bonsai:ledger", ledger);
+  }, LEDGER_BROADCAST_DEBOUNCE_MS);
 }
 
 function getUsageStatus(): UsageStatus {
@@ -2824,81 +2850,97 @@ function startUsageWatchers() {
     return;
   }
 
+  const enabledSources = new Set(ledger.settings.enabledSourceIds);
   const common = {
     userDataPath: app.getPath("userData"),
     historyStartAt: ledger.installedAt,
   };
 
-  codexSessionWatcher = startCodexSessionWatcher({
-    ...common,
-    sessionsRoot: ledger.settings.codexSessionsDir,
-    onUsage: appendUsageEvent,
-    onStatus: (status) => {
-      codexSessionStatus = status;
-      refreshTrayMenu();
-      broadcast("bonsai:usage-status", getUsageStatus());
-    },
-  });
-  claudeSessionWatcher = startClaudeSessionWatcher({
-    ...common,
-    sessionsRoot: ledger.settings.claudeSessionsDir,
-    onUsage: appendUsageEvent,
-    onStatus: (status) => {
-      claudeSessionStatus = status;
-      refreshTrayMenu();
-      broadcast("bonsai:usage-status", getUsageStatus());
-    },
-  });
-  openclawSessionWatcher = startOpenClawSessionWatcher({
-    ...common,
-    sessionsRoot: ledger.settings.openclawSessionsDir,
-    onUsage: appendUsageEvent,
-    onStatus: (status) => {
-      openclawSessionStatus = status;
-      refreshTrayMenu();
-      broadcast("bonsai:usage-status", getUsageStatus());
-    },
-  });
-  piSessionWatcher = startPiSessionWatcher({
-    ...common,
-    sessionsRoot: ledger.settings.piSessionsDir,
-    onUsage: appendUsageEvent,
-    onStatus: (status) => {
-      piSessionStatus = status;
-      refreshTrayMenu();
-      broadcast("bonsai:usage-status", getUsageStatus());
-    },
-  });
-  opencodeSessionWatcher = startOpenCodeSessionWatcher({
-    ...common,
-    sessionsRoot: ledger.settings.opencodeSessionsDir,
-    onUsage: appendUsageEvent,
-    onStatus: (status) => {
-      opencodeSessionStatus = status;
-      refreshTrayMenu();
-      broadcast("bonsai:usage-status", getUsageStatus());
-    },
-  });
-  geminiSessionWatcher = startGeminiSessionWatcher({
-    ...common,
-    sessionsRoot: ledger.settings.geminiSessionsDir,
-    onUsage: appendUsageEvent,
-    onStatus: (status) => {
-      geminiSessionStatus = status;
-      refreshTrayMenu();
-      broadcast("bonsai:usage-status", getUsageStatus());
-    },
-  });
-  hermesSessionWatcher = startHermesSessionWatcher({
-    ...common,
-    sessionsRoot: ledger.settings.hermesSessionsDir,
-    onUsage: appendUsageEvent,
-    onStatus: (status) => {
-      hermesSessionStatus = status;
-      refreshTrayMenu();
-      broadcast("bonsai:usage-status", getUsageStatus());
-    },
-  });
+  if (enabledSources.has("codex")) {
+    codexSessionWatcher = startCodexSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.codexSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        codexSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
+  if (enabledSources.has("claude")) {
+    claudeSessionWatcher = startClaudeSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.claudeSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        claudeSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
+  if (enabledSources.has("openclaw")) {
+    openclawSessionWatcher = startOpenClawSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.openclawSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        openclawSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
+  if (enabledSources.has("pi")) {
+    piSessionWatcher = startPiSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.piSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        piSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
+  if (enabledSources.has("opencode")) {
+    opencodeSessionWatcher = startOpenCodeSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.opencodeSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        opencodeSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
+  if (enabledSources.has("gemini")) {
+    geminiSessionWatcher = startGeminiSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.geminiSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        geminiSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
+  if (enabledSources.has("hermes")) {
+    hermesSessionWatcher = startHermesSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.hermesSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        hermesSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
+  broadcast("bonsai:usage-status", getUsageStatus());
 }
 
 function stopUsageWatchers() {
@@ -2958,6 +3000,7 @@ app.whenReady().then(async () => {
   }
   Menu.setApplicationMenu(null);
   ledger = readLedger();
+  rebuildLedgerEntryIndex();
   updateStatus = {
     ...updateStatus,
     currentVersion: currentAppVersion(),
@@ -2988,6 +3031,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   stopUsageWatchers();
   if (updateCheckTimer) clearTimeout(updateCheckTimer);
+  if (ledgerBroadcastTimer) clearTimeout(ledgerBroadcastTimer);
   leaderboardService.stop();
 });
 
@@ -3171,9 +3215,9 @@ ipcMain.handle("ledger:add-entry", (_event, input: { tokens: number; note?: stri
     note: input.note?.trim() || undefined,
   };
   ledger.entries.unshift(entry);
+  ledgerEntryIds.add(entry.id);
   appendUsageEntryToStore(entry);
-  broadcast("bonsai:ledger", ledger);
-  refreshTrayMenu();
+  broadcastLedgerNow();
   return ledger;
 });
 
