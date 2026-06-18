@@ -63,6 +63,9 @@ const WATCH_STATE_VERSION = 6;
 const SESSION_META_READ_LIMIT = 2 * 1024 * 1024;
 const PARENT_CUMULATIVE_TAIL_READ_LIMIT = 16 * 1024 * 1024;
 const PARENT_CUMULATIVE_TAIL_CHUNK_SIZE = 256 * 1024;
+const INITIAL_SCAN_DELAY_MS = 2_500;
+const SCAN_BATCH_SIZE = 16;
+const SCAN_BATCH_DELAY_MS = 16;
 
 export function startCodexSessionWatcher(options: CodexSessionWatcherOptions) {
   const sessionsRoot = options.sessionsRoot || process.env.VIBE_CODEX_SESSIONS_DIR || DEFAULT_SESSIONS_ROOT;
@@ -90,61 +93,74 @@ export function startCodexSessionWatcher(options: CodexSessionWatcherOptions) {
   };
 
   let closed = false;
-  let polling = false;
+  let pollRunning = false;
+  let pollQueued = false;
+  let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
 
   const poll = async () => {
-    if (closed || polling) return;
-    polling = true;
-    let nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
+    if (closed) return;
+    if (pollRunning) {
+      pollQueued = true;
+      return;
+    }
+    pollRunning = true;
     try {
-      status.exists = existsSync(sessionsRoot);
-      status.lastScanAt = new Date().toISOString();
-      if (!status.exists) {
-        options.onStatus?.(status);
-        return;
-      }
-      const files = listJsonlFiles(sessionsRoot);
-      status.filesWatched = files.length;
-      for (const filePath of files) {
-        if (closed) return;
-        const imported = await scanFile(filePath, state, statePath, options, {
-          importHistory,
-          watcherStartedAt,
-          historyStartAtMs,
-          sessionsRoot,
-          shouldYield: () => Date.now() >= nextYieldAt,
-          onYield: async () => {
-            await yieldToEventLoop();
-            nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
-          },
-        });
-        if (imported > 0) {
-          status.eventsImported += imported;
-          status.lastEventAt = new Date().toISOString();
-        }
-        if (Date.now() >= nextYieldAt) {
-          await yieldToEventLoop();
-          nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
-        }
-      }
-      options.onStatus?.(status);
-    } catch (error) {
-      console.error("Codex session watcher scan failed", error);
-      options.onStatus?.(status);
+      do {
+        pollQueued = false;
+        await runPoll();
+      } while (pollQueued && !closed);
     } finally {
-      polling = false;
+      pollRunning = false;
     }
   };
 
-  void poll();
-  const timer = setInterval(() => {
-    void poll();
-  }, POLL_INTERVAL_MS);
+  const runPoll = async () => {
+    status.exists = existsSync(sessionsRoot);
+    status.lastScanAt = new Date().toISOString();
+    if (!status.exists) {
+      options.onStatus?.(status);
+      return;
+    }
+    const files = listJsonlFiles(sessionsRoot);
+    status.filesWatched = files.length;
+    options.onStatus?.(status);
+    let nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
+    for (let index = 0; index < files.length; index += 1) {
+      if (closed) return;
+      const imported = await scanFile(files[index], state, statePath, options, {
+        importHistory,
+        watcherStartedAt,
+        historyStartAtMs,
+        sessionsRoot,
+        shouldYield: () => Date.now() >= nextYieldAt,
+        onYield: async () => {
+          await yieldToEventLoop();
+          nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
+        },
+      });
+      if (imported > 0) {
+        status.eventsImported += imported;
+        status.lastEventAt = new Date().toISOString();
+      }
+      if ((index + 1) % SCAN_BATCH_SIZE === 0) {
+        writeState(statePath, state);
+        options.onStatus?.(status);
+        await delay(SCAN_BATCH_DELAY_MS);
+        nextYieldAt = Date.now() + SCAN_YIELD_INTERVAL_MS;
+      }
+    }
+    writeState(statePath, state);
+    options.onStatus?.(status);
+  };
+
+  initialScanTimer = setTimeout(() => void poll(), INITIAL_SCAN_DELAY_MS);
+  const timer = setInterval(() => void poll(), POLL_INTERVAL_MS);
 
   return {
     close: () => {
       closed = true;
       status.running = false;
+      if (initialScanTimer) clearTimeout(initialScanTimer);
       clearInterval(timer);
       writeState(statePath, state);
       options.onStatus?.(status);
@@ -156,7 +172,7 @@ export function startCodexSessionWatcher(options: CodexSessionWatcherOptions) {
 async function scanFile(
   filePath: string,
   state: WatchState,
-  statePath: string,
+  _statePath: string,
   options: CodexSessionWatcherOptions,
   settings: {
     importHistory: boolean;
@@ -172,7 +188,6 @@ async function scanFile(
   const previousOffset = state.files[filePath];
   if ((previousOffset === undefined || stats.size > previousOffset) && isArchivedCodexSession(filePath)) {
     state.files[filePath] = stats.size;
-    writeState(statePath, state);
     return imported;
   }
   const forkBaseline = seedForkCumulativeBaseline(filePath, state, settings.sessionsRoot);
@@ -249,7 +264,6 @@ async function scanFile(
 
   state.files[filePath] = stats.size;
   if (currentModel) state.currentModels[filePath] = currentModel;
-  writeState(statePath, state);
   return imported;
 }
 
@@ -301,6 +315,10 @@ async function scanNewLines(
   }
 
   return imported;
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function yieldToEventLoop() {
