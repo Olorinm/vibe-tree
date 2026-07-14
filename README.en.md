@@ -32,7 +32,7 @@ Opt into the leaderboard with GitHub. By default, only aggregated token ranking 
 
 - **Desktop pixel tree**: always-on-top, draggable, scalable, lockable, and quiet on startup.
 - **Live token weather**: total tokens drive level growth; current token/min drives weather.
-- **Multi-agent sources**: Codex, Claude Code, OpenClaw, Pi Agent, OpenCode, Gemini, and Hermes.
+- **Multi-agent sources**: Codex, Claude Code, OpenClaw, Pi Agent, OpenCode, Gemini, Hermes, and Kimi Code.
 - **Source and model breakdowns**: inspect input, output, cache, and model distribution by agent.
 - **One tree across devices**: sign in with the same GitHub account to sync level, total tokens, achievements, device contributions, and aggregate model share across Windows and Mac.
 - **Recent 7-day chart**: filter token trends by source.
@@ -87,6 +87,7 @@ electron_mirror=https://npmmirror.com/mirrors/electron/
 | OpenCode | ✅ | `~/.local/share/opencode/opencode.db` (legacy `storage/message/**/*.json` remains supported) |
 | Gemini | ✅ | local Gemini session directory |
 | Hermes | ✅ | local Hermes session directory |
+| Kimi Code | ✅ | `~/.kimi-code/sessions/**/wire.jsonl` |
 
 Vibe Tree auto-detects the default paths after installation. You can customize source paths or disable sources in settings.
 
@@ -126,6 +127,7 @@ VIBE_CODEX_IMPORT_HISTORY=today \
 VIBE_CLAUDE_IMPORT_HISTORY=today \
 VIBE_OPENCLAW_IMPORT_HISTORY=today \
 VIBE_OPENCODE_IMPORT_HISTORY=today \
+VIBE_KIMI_IMPORT_HISTORY=today \
 npm start
 ```
 
@@ -136,6 +138,7 @@ $env:VIBE_CODEX_IMPORT_HISTORY="today"
 $env:VIBE_CLAUDE_IMPORT_HISTORY="today"
 $env:VIBE_OPENCLAW_IMPORT_HISTORY="today"
 $env:VIBE_OPENCODE_IMPORT_HISTORY="today"
+$env:VIBE_KIMI_IMPORT_HISTORY="today"
 npm start
 ```
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-14 (v0.8.0)
+
+- Added Kimi Code token tracking from local `~/.kimi-code/sessions/**/wire.jsonl` usage records, including settings, source filters, status, and model breakdowns.
+- Fixed Codex usage from the previous calendar-day directory being skipped when Vibe Tree first starts after midnight and the events are still inside the configured history window.
+- Replayed Codex watcher state once so previously skipped in-window usage can be recovered without duplicating stable ledger entries.
+
 ## 2026-06-18 (v0.7.4)
 
 - Delayed and batched startup session watcher scans so the app can paint before large local Codex, Claude, and other agent folders are backfilled.

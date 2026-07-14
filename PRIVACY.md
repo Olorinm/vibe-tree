@@ -21,6 +21,7 @@ Vibe Tree 会从本机的 agent 使用记录中提取 token 计数字段、时�
 | OpenCode | `~/.local/share/opencode/opencode.db` | Windows 下默认是 `%LOCALAPPDATA%\opencode\opencode.db`；兼容旧版 `storage/message/**/*.json` |
 | Gemini | `~/.gemini/tmp` | 本地 Gemini session JSON / JSONL |
 | Hermes | `~/.hermes/state.db` | Hermes 本地状态数据库 |
+| Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` | Kimi Code 本地 usage 记录 |
 
 这些默认路径可以在设置面板的 Agent 路径中覆盖。相关环境变量如 `VIBE_CODEX_SESSIONS_DIR`、`VIBE_CLAUDE_SESSIONS_DIR`、`VIBE_OPENCODE_SESSIONS_DIR` 等也可以覆盖默认路径。
 
@@ -109,6 +110,7 @@ Vibe Tree extracts token accounting fields, timestamps, source, provider, and mo
 | OpenCode | `~/.local/share/opencode/opencode.db` | On Windows, `%LOCALAPPDATA%\opencode\opencode.db`; legacy `storage/message/**/*.json` is also supported |
 | Gemini | `~/.gemini/tmp` | Local Gemini session JSON / JSONL |
 | Hermes | `~/.hermes/state.db` | Hermes local state database |
+| Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` | Local Kimi Code usage records |
 
 These paths can be overridden in the Agent Paths settings. Environment variables such as `VIBE_CODEX_SESSIONS_DIR`, `VIBE_CLAUDE_SESSIONS_DIR`, and `VIBE_OPENCODE_SESSIONS_DIR` can also override defaults.
 
