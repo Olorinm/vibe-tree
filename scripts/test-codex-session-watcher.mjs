@@ -48,7 +48,7 @@ function token(timestamp, total, last = total) {
 
 function newState() {
   return {
-    version: 6,
+    version: 7,
     files: {},
     cumulativeTokens: {},
     acceptedCumulativeKeys: {},
@@ -56,7 +56,7 @@ function newState() {
   };
 }
 
-async function runScan(filePath, state, statePath, sessionsRoot) {
+async function runScan(filePath, state, statePath, sessionsRoot, overrides = {}) {
   const events = [];
   const imported = await scanFile(
     filePath,
@@ -71,6 +71,7 @@ async function runScan(filePath, state, statePath, sessionsRoot) {
       importHistory: false,
       watcherStartedAt: Date.parse("2026-06-04T00:00:00.000Z"),
       sessionsRoot,
+      ...overrides,
     },
   );
   return { imported, events };
@@ -189,12 +190,33 @@ async function runParentTailBaselineTest(root) {
   assert(events[0]?.totalTokens === 50, `parent tail baseline should import 50 tokens, got ${events[0]?.totalTokens}`);
 }
 
+async function runPreviousDayHistoryBoundaryTest(root) {
+  const sessionsRoot = join(root, "sessions-previous-day-history");
+  const statePath = join(root, "previous-day-history-state.json");
+  const sessionPath = makeSessionPath(sessionsRoot, "2026-07-11", "019f0000-0000-7000-8000-000000000005");
+  const state = newState();
+
+  writeJsonl(sessionPath, [
+    meta("2026-07-11T15:45:00.000Z"),
+    token("2026-07-11T15:50:00.000Z", 100, 100),
+    token("2026-07-11T16:10:00.000Z", 180, 80),
+  ]);
+
+  const { imported, events } = await runScan(sessionPath, state, statePath, sessionsRoot, {
+    watcherStartedAt: Date.parse("2026-07-12T00:10:00.000Z"),
+    historyStartAtMs: Date.parse("2026-07-11T16:00:00.000Z"),
+  });
+  assert(imported === 1, `previous-day history scan should import 1 in-window event, got ${imported}`);
+  assert(events[0]?.totalTokens === 80, `previous-day history scan should import 80 tokens, got ${events[0]?.totalTokens}`);
+}
+
 const root = mkdtempSync(join(tmpdir(), "vibe-tree-codex-watcher-"));
 try {
   await runKnownParentForkTest(root);
   await runHalfWrittenForkTest(root);
   await runMissingParentForkTest(root);
   await runParentTailBaselineTest(root);
+  await runPreviousDayHistoryBoundaryTest(root);
   console.log("codex session watcher fork tests passed");
 } finally {
   rmSync(root, { recursive: true, force: true });
