@@ -550,6 +550,7 @@ const safeCloudSources = new Set([
   "opencode-session",
   "gemini-session",
   "hermes-session",
+  "kimi-session",
   "cloud-sync",
 ]);
 
@@ -589,6 +590,28 @@ const joinZeroTokenDevice = createDevice("join-zero-token", "join-zero-device", 
 status = await joinZeroTokenDevice.service.joinCloudTree();
 assert(!status.error, `joining a zero-token cloud tree should succeed: ${status.error}`);
 assert(joinZeroTokenDevice.ledger.settings.cloudSyncEnabled === true, "joining a zero-token cloud tree should enable cloud sync");
+
+const kimiCloud = createFakeCloud();
+const kimiDevice = createDevice("kimi-device", "kimi-device-id", kimiCloud, {
+  entries: [
+    {
+      ...localEntry("kimi-session:usage-record", "kimi-device-id", "kimi-session", "2026-05-27T00:30:00.000Z", 1200),
+      model: "mimo-v2.5-pro",
+    },
+  ],
+});
+kimiDevice.ledger.settings.cloudSyncEnabled = true;
+kimiDevice.ledger.settings.treeStartMode = "new";
+status = await kimiDevice.service.syncCloudTree({ force: true });
+assert(!status.error, `Kimi cloud sync failed: ${status.error}`);
+assert(kimiCloud.events.get("kimi-session:usage-record")?.source === "kimi-session", "cloud sync should preserve the Kimi source category");
+assert(
+  [...kimiCloud.modelStats.values()].some(
+    (row) => row.source === "kimi-session" && row.model === "mimo-v2.5-pro" && row.tokens === 1200,
+  ),
+  "cloud sync should preserve Kimi aggregate model totals",
+);
+kimiDevice.service.stop();
 
 const cloud = createFakeCloud();
 const repairedWinEntry = {

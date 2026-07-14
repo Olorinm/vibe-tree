@@ -28,11 +28,11 @@
       "fixes": {
         "zh-CN": [
           "修复午夜后首次打开 Vibe Tree 时，上一日目录中仍处于统计窗口内的 Codex 用量可能被跳过的问题。",
-          "升级后会安全重放一次 Codex watcher 状态，以恢复此前可能漏记的窗口内数据；已有记录会按稳定 ID 去重。"
+          "升级后会重新检查统计窗口内的 Codex 会话，恢复此前可能漏记的数据；已有数据不会重复计算。"
         ],
         "en-US": [
           "Fixed Codex usage inside the active history window being skipped when its session file is under the previous calendar-day directory.",
-          "The Codex watcher state is safely replayed once after upgrade to recover previously missed in-window usage; existing records remain deduplicated by stable IDs."
+          "After upgrading, Vibe Tree rechecks Codex sessions inside the active statistics window to recover missed usage without counting existing data twice."
         ]
       },
       "privacy": {
