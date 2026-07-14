@@ -28,6 +28,7 @@ import {
   startClaudeSessionWatcher,
   startGeminiSessionWatcher,
   startHermesSessionWatcher,
+  startKimiSessionWatcher,
   startOpenClawSessionWatcher,
   startOpenCodeSessionWatcher,
   startPiSessionWatcher,
@@ -76,8 +77,9 @@ const APP_ID = "com.vibetree.app";
 const SMOKE_TEST = process.env.VIBE_TREE_SMOKE_TEST === "1";
 const USER_DATA_DIR_OVERRIDE = process.env.VIBE_TREE_USER_DATA_DIR?.trim();
 if (USER_DATA_DIR_OVERRIDE) app.setPath("userData", USER_DATA_DIR_OVERRIDE);
-const STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "cloud"] as const;
-const LOCAL_STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes"] as const;
+const STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "kimi", "cloud"] as const;
+const PRE_KIMI_STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "cloud"] as const;
+const SOURCE_CATALOG_VERSION = 1;
 // Menu bar popover components, in their canonical default order. Must mirror
 // MENUBAR_VIZ_IDS in the renderer.
 const MENUBAR_VIZ_IDS = ["rhythm", "sync", "activity", "rank", "sources", "speed"] as const;
@@ -175,6 +177,7 @@ let piSessionWatcher: ReturnType<typeof startPiSessionWatcher> | null = null;
 let opencodeSessionWatcher: ReturnType<typeof startOpenCodeSessionWatcher> | null = null;
 let geminiSessionWatcher: ReturnType<typeof startGeminiSessionWatcher> | null = null;
 let hermesSessionWatcher: ReturnType<typeof startHermesSessionWatcher> | null = null;
+let kimiSessionWatcher: ReturnType<typeof startKimiSessionWatcher> | null = null;
 let codexSessionStatus: UsageStatus["codexSession"] = {
   running: false,
   sessionsRoot: "",
@@ -224,6 +227,14 @@ let geminiSessionStatus: UsageStatus["geminiSession"] = {
   importHistory: false,
 };
 let hermesSessionStatus: UsageStatus["hermesSession"] = {
+  running: false,
+  sessionsRoot: "",
+  exists: false,
+  filesWatched: 0,
+  eventsImported: 0,
+  importHistory: false,
+};
+let kimiSessionStatus: UsageStatus["kimiSession"] = {
   running: false,
   sessionsRoot: "",
   exists: false,
@@ -474,6 +485,7 @@ function readDeviceSettings(legacySettings: Partial<Settings> | undefined, hasLo
     !stored ||
     stored.language === undefined ||
     stored.enabledSourceIds === undefined ||
+    stored.sourceCatalogVersion !== SOURCE_CATALOG_VERSION ||
     stored.menubarVizIds === undefined ||
     migratedTreeStartMode
   ) {
@@ -613,7 +625,8 @@ function normalizeSettings(settings: Partial<Settings>): Settings {
     launchOnStartup: Boolean(settings.launchOnStartup),
     silentStartup: Boolean(settings.silentStartup),
     proxyUrl: cleanProxyUrl(settings.proxyUrl),
-    enabledSourceIds: normalizeEnabledSourceIds(settings.enabledSourceIds),
+    enabledSourceIds: normalizeEnabledSourceIds(settings.enabledSourceIds, settings.sourceCatalogVersion),
+    sourceCatalogVersion: SOURCE_CATALOG_VERSION,
     menubarVizIds: normalizeMenubarVizIds(settings.menubarVizIds),
     scale,
     badgeFrontMetric: normalizeBadgeMetric(settings.badgeFrontMetric, "level"),
@@ -627,6 +640,7 @@ function normalizeSettings(settings: Partial<Settings>): Settings {
     opencodeSessionsDir: cleanPath(settings.opencodeSessionsDir),
     geminiSessionsDir: cleanPath(settings.geminiSessionsDir),
     hermesSessionsDir: cleanPath(settings.hermesSessionsDir),
+    kimiSessionsDir: cleanPath(settings.kimiSessionsDir),
   };
 }
 
@@ -673,14 +687,18 @@ function normalizeTotalDisplayUnit(value: unknown): Settings["totalDisplayUnit"]
   return value === "raw" || value === "k" || value === "m" || value === "wan" || value === "yi" ? value : "m";
 }
 
-function normalizeEnabledSourceIds(value: unknown): string[] {
+function normalizeEnabledSourceIds(value: unknown, sourceCatalogVersion: unknown): string[] {
   if (!Array.isArray(value)) return [...STAT_SOURCE_IDS];
   const allowed = new Set<string>(STAT_SOURCE_IDS);
   const normalized = [...new Set(value.filter((item): item is string => typeof item === "string" && allowed.has(item)))];
-  const hadAllLegacySources = LOCAL_STAT_SOURCE_IDS.filter((source) => source !== "pi").every((source) =>
+  const hadAllPrePiSources = PRE_KIMI_STAT_SOURCE_IDS.filter((source) => source !== "pi").every((source) =>
     normalized.includes(source),
   );
-  if (hadAllLegacySources && !normalized.includes("pi")) normalized.splice(2, 0, "pi");
+  if (hadAllPrePiSources && !normalized.includes("pi")) normalized.splice(2, 0, "pi");
+  if (sourceCatalogVersion !== SOURCE_CATALOG_VERSION && !normalized.includes("kimi")) {
+    const cloudIndex = normalized.indexOf("cloud");
+    normalized.splice(cloudIndex >= 0 ? cloudIndex : normalized.length, 0, "kimi");
+  }
   if (!normalized.includes("cloud")) normalized.push("cloud");
   return normalized;
 }
@@ -1505,6 +1523,10 @@ function refreshTrayMenu() {
       label: sourceStatusLabel("Hermes", hermesSessionStatus, "hermes-session"),
       enabled: false,
     },
+    {
+      label: sourceStatusLabel("Kimi Code", kimiSessionStatus, "kimi-session"),
+      enabled: false,
+    },
     { type: "separator" },
     {
       label: mainText("petSize"),
@@ -1736,6 +1758,7 @@ function updateSettings(partial: Partial<Settings>) {
     previous.opencodeSessionsDir !== ledger.settings.opencodeSessionsDir ||
     previous.geminiSessionsDir !== ledger.settings.geminiSessionsDir ||
     previous.hermesSessionsDir !== ledger.settings.hermesSessionsDir ||
+    previous.kimiSessionsDir !== ledger.settings.kimiSessionsDir ||
     previous.enabledSourceIds.join(",") !== ledger.settings.enabledSourceIds.join(",")
   ) {
     restartUsageWatchers();
@@ -2142,6 +2165,7 @@ const SAFE_CLOUD_EVENT_SOURCES = new Set([
   "opencode-session",
   "gemini-session",
   "hermes-session",
+  "kimi-session",
   "cloud-sync",
 ]);
 
@@ -2198,6 +2222,7 @@ function getUsageStatus(): UsageStatus {
     opencodeSession: opencodeSessionStatus,
     geminiSession: geminiSessionStatus,
     hermesSession: hermesSessionStatus,
+    kimiSession: kimiSessionStatus,
   };
 }
 
@@ -2961,6 +2986,18 @@ function startUsageWatchers() {
       },
     });
   }
+  if (enabledSources.has("kimi")) {
+    kimiSessionWatcher = startKimiSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.kimiSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        kimiSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
   broadcast("bonsai:usage-status", getUsageStatus());
 }
 
@@ -2972,6 +3009,7 @@ function stopUsageWatchers() {
   opencodeSessionWatcher?.close();
   geminiSessionWatcher?.close();
   hermesSessionWatcher?.close();
+  kimiSessionWatcher?.close();
   codexSessionWatcher = null;
   claudeSessionWatcher = null;
   openclawSessionWatcher = null;
@@ -2979,6 +3017,7 @@ function stopUsageWatchers() {
   opencodeSessionWatcher = null;
   geminiSessionWatcher = null;
   hermesSessionWatcher = null;
+  kimiSessionWatcher = null;
 }
 
 function restartUsageWatchers() {

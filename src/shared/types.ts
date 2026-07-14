@@ -322,6 +322,7 @@ export interface Settings {
   silentStartup: boolean;
   proxyUrl?: string;
   enabledSourceIds: string[];
+  sourceCatalogVersion?: number;
   // Ordered list of visible menu bar popover component ids, in display order.
   menubarVizIds: string[];
   windowPosition?: {
@@ -336,6 +337,7 @@ export interface Settings {
   opencodeSessionsDir?: string;
   geminiSessionsDir?: string;
   hermesSessionsDir?: string;
+  kimiSessionsDir?: string;
 }
 
 export interface LedgerFile {
@@ -409,6 +411,7 @@ export interface UsageStatus {
   opencodeSession: SessionMonitorStatus;
   geminiSession: SessionMonitorStatus;
   hermesSession: SessionMonitorStatus;
+  kimiSession: SessionMonitorStatus;
 }
 
 export interface SessionMonitorStatus {

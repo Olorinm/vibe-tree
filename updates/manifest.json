@@ -2,6 +2,59 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.8.0",
+      "publishedAt": "2026-07-14",
+      "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.8.0",
+      "title": {
+        "zh-CN": "Vibe Tree v0.8.0",
+        "en-US": "Vibe Tree v0.8.0"
+      },
+      "summary": {
+        "zh-CN": "本次更新新增 Kimi Code 本地 Token 统计，并修复跨午夜首次启动时可能漏记上一日仍在统计窗口内的 Codex 用量。",
+        "en-US": "This update adds local Kimi Code token tracking and fixes Codex usage from the previous day being skipped when Vibe Tree first starts after midnight."
+      },
+      "highlights": {
+        "zh-CN": [
+          "自动读取 Kimi Code 本地 usage 记录，并展示 Token、模型和来源统计。",
+          "可在设置中启用或关闭 Kimi Code，并自定义会话目录。",
+          "历史图表和来源统计现在可单独筛选 Kimi Code。"
+        ],
+        "en-US": [
+          "Reads local Kimi Code usage records and shows token, model, and source statistics.",
+          "Kimi Code can be enabled, disabled, or pointed at a custom sessions directory in Settings.",
+          "History charts and source breakdowns can now filter Kimi Code separately."
+        ]
+      },
+      "fixes": {
+        "zh-CN": [
+          "修复午夜后首次打开 Vibe Tree 时，上一日目录中仍处于统计窗口内的 Codex 用量可能被跳过的问题。",
+          "升级后会重新检查统计窗口内的 Codex 会话，恢复此前可能漏记的数据；已有数据不会重复计算。"
+        ],
+        "en-US": [
+          "Fixed Codex usage inside the active history window being skipped when its session file is under the previous calendar-day directory.",
+          "After upgrading, Vibe Tree rechecks Codex sessions inside the active statistics window to recover missed usage without counting existing data twice."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "Kimi Code 会话记录在本机读取；不会上传提示词、回复、代码文件、本地路径或会话正文。",
+          "本次更新没有新增上传字段；开启多设备同步时，Kimi Code 仅使用现有的 Token、来源和模型聚合字段。"
+        ],
+        "en-US": [
+          "Kimi Code session records are read locally; prompts, replies, code files, local paths, and session text are not uploaded.",
+          "No uploaded fields were added; when multi-device sync is enabled, Kimi Code uses the existing token, source, and model aggregate fields."
+        ]
+      },
+      "upgradeNotes": {
+        "zh-CN": [
+          "升级不会清空本机数据，也不需要 Worker 或 D1 迁移。"
+        ],
+        "en-US": [
+          "Upgrading does not clear local data and requires no Worker or D1 migration."
+        ]
+      }
+    },
+    {
       "version": "0.7.4",
       "publishedAt": "2026-06-18",
       "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.7.4",

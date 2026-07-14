@@ -59,7 +59,7 @@ const POLL_INTERVAL_MS = 10_000;
 const READ_CHUNK_SIZE = 64 * 1024;
 const SCAN_YIELD_INTERVAL_MS = 25;
 const DEFAULT_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
-const WATCH_STATE_VERSION = 6;
+const WATCH_STATE_VERSION = 7;
 const SESSION_META_READ_LIMIT = 2 * 1024 * 1024;
 const PARENT_CUMULATIVE_TAIL_READ_LIMIT = 16 * 1024 * 1024;
 const PARENT_CUMULATIVE_TAIL_CHUNK_SIZE = 256 * 1024;
@@ -221,6 +221,7 @@ async function scanFile(
           const baselineUsage = event.cumulativeUsage ?? event.deltaUsage;
           if (baselineUsage) {
             state.cumulativeTokens[event.cumulativeKey] = baselineUsage;
+            state.acceptedCumulativeKeys[event.cumulativeKey] = true;
           }
           return 0;
         }
@@ -333,11 +334,11 @@ function initialOffset(
   if (settings.hasForkBaseline) {
     return 0;
   }
-  if (shouldBaselineInitialCodexSession(filePath)) {
-    return stats.size;
-  }
   if (settings.historyStartAtMs && stats.mtimeMs >= settings.historyStartAtMs - 5_000) {
     return 0;
+  }
+  if (shouldBaselineInitialCodexSession(filePath)) {
+    return stats.size;
   }
   if (settings.importHistory && isTodaySessionPath(filePath)) {
     return 0;

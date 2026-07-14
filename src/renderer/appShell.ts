@@ -730,6 +730,13 @@ export function appShellHtml(viewMode: ViewMode) {
                       </label>
                       <input id="hermesSessionsDirInput" type="text" placeholder="~/.hermes/state.db" aria-label="Hermes path" />
                     </div>
+                    <div class="agent-source-row">
+                      <label class="agent-source-toggle">
+                        <input type="checkbox" data-stats-source="kimi" />
+                        <span data-i18n="kimiPath">Kimi Code 路径</span>
+                      </label>
+                      <input id="kimiSessionsDirInput" type="text" placeholder="~/.kimi-code/sessions" aria-label="Kimi Code path" />
+                    </div>
                   </div>
                 </section>
               </div>
