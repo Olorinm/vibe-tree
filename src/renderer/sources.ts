@@ -27,21 +27,7 @@ export function isHistorySourceId(value: unknown): value is HistorySourceId {
 
 export function enabledStatsSourceIds(raw: unknown): HistorySourceId[] {
   if (!Array.isArray(raw)) return allStatsSourceIds();
-  const normalized = [...new Set(raw)].filter(isHistorySourceId);
-  // New sources added after the user saved their settings should be enabled by
-  // default rather than silently hidden.  We only auto-inject sources that are
-  // genuinely new – if the user has already seen a source and unchecked it we
-  // respect that choice.  The heuristic: the saved list contains every source
-  // that existed before this one was added.
-  const PREVIOUS_SOURCE_IDS: HistorySourceId[] = [
-    "codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "cloud",
-  ];
-  const savedSet = new Set(normalized);
-  const looksLikePreKimiList = PREVIOUS_SOURCE_IDS.every((id) => savedSet.has(id));
-  if (looksLikePreKimiList && !savedSet.has("kimi")) {
-    normalized.push("kimi");
-  }
-  return normalized;
+  return [...new Set(raw)].filter(isHistorySourceId);
 }
 
 export function enabledStatsSourceSet(raw: unknown) {

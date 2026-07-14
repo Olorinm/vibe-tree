@@ -79,6 +79,7 @@ const USER_DATA_DIR_OVERRIDE = process.env.VIBE_TREE_USER_DATA_DIR?.trim();
 if (USER_DATA_DIR_OVERRIDE) app.setPath("userData", USER_DATA_DIR_OVERRIDE);
 const STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "kimi", "cloud"] as const;
 const PRE_KIMI_STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "cloud"] as const;
+const SOURCE_CATALOG_VERSION = 1;
 // Menu bar popover components, in their canonical default order. Must mirror
 // MENUBAR_VIZ_IDS in the renderer.
 const MENUBAR_VIZ_IDS = ["rhythm", "sync", "activity", "rank", "sources", "speed"] as const;
@@ -484,6 +485,7 @@ function readDeviceSettings(legacySettings: Partial<Settings> | undefined, hasLo
     !stored ||
     stored.language === undefined ||
     stored.enabledSourceIds === undefined ||
+    stored.sourceCatalogVersion !== SOURCE_CATALOG_VERSION ||
     stored.menubarVizIds === undefined ||
     migratedTreeStartMode
   ) {
@@ -623,7 +625,8 @@ function normalizeSettings(settings: Partial<Settings>): Settings {
     launchOnStartup: Boolean(settings.launchOnStartup),
     silentStartup: Boolean(settings.silentStartup),
     proxyUrl: cleanProxyUrl(settings.proxyUrl),
-    enabledSourceIds: normalizeEnabledSourceIds(settings.enabledSourceIds),
+    enabledSourceIds: normalizeEnabledSourceIds(settings.enabledSourceIds, settings.sourceCatalogVersion),
+    sourceCatalogVersion: SOURCE_CATALOG_VERSION,
     menubarVizIds: normalizeMenubarVizIds(settings.menubarVizIds),
     scale,
     badgeFrontMetric: normalizeBadgeMetric(settings.badgeFrontMetric, "level"),
@@ -684,7 +687,7 @@ function normalizeTotalDisplayUnit(value: unknown): Settings["totalDisplayUnit"]
   return value === "raw" || value === "k" || value === "m" || value === "wan" || value === "yi" ? value : "m";
 }
 
-function normalizeEnabledSourceIds(value: unknown): string[] {
+function normalizeEnabledSourceIds(value: unknown, sourceCatalogVersion: unknown): string[] {
   if (!Array.isArray(value)) return [...STAT_SOURCE_IDS];
   const allowed = new Set<string>(STAT_SOURCE_IDS);
   const normalized = [...new Set(value.filter((item): item is string => typeof item === "string" && allowed.has(item)))];
@@ -692,8 +695,10 @@ function normalizeEnabledSourceIds(value: unknown): string[] {
     normalized.includes(source),
   );
   if (hadAllPrePiSources && !normalized.includes("pi")) normalized.splice(2, 0, "pi");
-  const hadAllPreKimiSources = PRE_KIMI_STAT_SOURCE_IDS.every((source) => normalized.includes(source));
-  if (hadAllPreKimiSources && !normalized.includes("kimi")) normalized.splice(normalized.indexOf("cloud"), 0, "kimi");
+  if (sourceCatalogVersion !== SOURCE_CATALOG_VERSION && !normalized.includes("kimi")) {
+    const cloudIndex = normalized.indexOf("cloud");
+    normalized.splice(cloudIndex >= 0 ? cloudIndex : normalized.length, 0, "kimi");
+  }
   if (!normalized.includes("cloud")) normalized.push("cloud");
   return normalized;
 }
