@@ -121,6 +121,7 @@ interface LeaderboardServiceOptions {
   writeJsonAtomic: (path: string, value: unknown) => void;
   broadcastStatus: (status: LeaderboardStatus) => void;
   requestJson?: LeaderboardRequestJson;
+  now?: () => Date;
 }
 
 export interface LeaderboardSyncOptions {
@@ -142,6 +143,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
   const configured = Boolean(options.apiUrl);
   const ledger = () => options.getLedger();
   const text = (key: string) => options.mainText(key);
+  const now = () => new Date(options.now?.().getTime() ?? Date.now());
   const requestJson: LeaderboardRequestJson = (urlString, requestOptions) =>
     options.requestJson ? options.requestJson(urlString, requestOptions) : defaultRequestJson(urlString, requestOptions);
 
@@ -251,13 +253,13 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
   function nextSyncDelay() {
     const lastSyncedTime = latestSyncTime(ledger().settings.leaderboardLastSyncedAt, lastSyncAttemptAt);
     if (!lastSyncedTime) return Math.min(3_000, options.syncIntervalMs);
-    return Math.max(3_000, lastSyncedTime + options.syncIntervalMs - Date.now());
+    return Math.max(3_000, lastSyncedTime + options.syncIntervalMs - now().getTime());
   }
 
   function nextCloudSyncDelay() {
     const lastSyncedTime = latestSyncTime(ledger().settings.cloudSyncLastSyncedAt);
     if (!lastSyncedTime) return Math.min(3_000, options.cloudSyncIntervalMs);
-    return Math.max(3_000, lastSyncedTime + options.cloudSyncIntervalMs - Date.now());
+    return Math.max(3_000, lastSyncedTime + options.cloudSyncIntervalMs - now().getTime());
   }
 
   function latestSyncTime(...values: Array<string | undefined>) {
@@ -289,7 +291,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     writeAuth({
       token,
       profile,
-      createdAt: new Date().toISOString(),
+      createdAt: now().toISOString(),
     });
     options.updateSettings({
       leaderboardProfile: profile,
@@ -334,7 +336,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
 
     const leaderboardEnabled = ledger().settings.leaderboardEnabled === true;
     syncing = true;
-    lastSyncAttemptAt = new Date().toISOString();
+    lastSyncAttemptAt = now().toISOString();
     broadcast();
 
     try {
@@ -358,7 +360,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       syncing = false;
       options.updateSettings({
         leaderboardProfile: auth.profile,
-        leaderboardLastSyncedAt: new Date().toISOString(),
+        leaderboardLastSyncedAt: now().toISOString(),
       });
       scheduleNextSync();
       broadcast();
@@ -506,8 +508,8 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       options.updateSettings({
         cloudSyncEnabled: true,
         cloudSyncDeviceId: options.deviceId(),
-        cloudSyncLastSyncedAt: new Date().toISOString(),
-        cloudSyncLastPulledAt: new Date().toISOString(),
+        cloudSyncLastSyncedAt: now().toISOString(),
+        cloudSyncLastPulledAt: now().toISOString(),
       });
       cloudSyncing = false;
       scheduleCloudSyncSoon(nextCloudSyncDelay());
@@ -1175,7 +1177,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
 
   function dailyUsage() {
     const byDate = new Map<string, number>();
-    const cutoff = new Date();
+    const cutoff = now();
     cutoff.setDate(cutoff.getDate() - 29);
     cutoff.setHours(0, 0, 0, 0);
 
@@ -1220,7 +1222,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
 
   function hourlyUsage() {
     const byHour = new Map<string, number>();
-    const cutoff = new Date();
+    const cutoff = now();
     cutoff.setTime(cutoff.getTime() - HOURLY_USAGE_UPLOAD_HOURS * 60 * 60 * 1000);
 
     for (const entry of ledger().entries) {
@@ -1231,7 +1233,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       const key = utcHourKey(createdAt);
       byHour.set(key, (byHour.get(key) ?? 0) + tokens);
     }
-    const currentHour = utcHourKey(new Date());
+    const currentHour = utcHourKey(now());
     if (!byHour.has(currentHour)) byHour.set(currentHour, 0);
 
     return [...byHour.entries()]
@@ -1250,8 +1252,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
   }
 
   function usagePreferenceForRange(range: LeaderboardRange): LeaderboardUsagePreference | undefined {
-    const now = new Date();
-    const start = preferenceRangeStart(range, now);
+    const start = preferenceRangeStart(range, now());
     const agentTotals = new Map<string, number>();
     const modelTotals = modelTotalsFromSyncedAggregates(start);
     const useAggregateModelTotals = modelTotals.size > 0;

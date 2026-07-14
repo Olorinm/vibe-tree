@@ -390,6 +390,7 @@ function createDevice(
     },
     broadcastStatus: () => {},
     requestJson: cloud.requestJson,
+    now: () => new Date("2026-05-27T12:00:00.000Z"),
   });
   service.readAuth();
 
