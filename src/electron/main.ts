@@ -41,6 +41,7 @@ import type { LeaderboardRequestJsonOptions } from "./leaderboard.js";
 import { countedInputTokensForEntry, countedTokensForEntry } from "../shared/tokenAccounting.js";
 import { levelProgressForXp, VIBE_TREE_LEVEL_CURVE } from "../shared/leveling.js";
 import { SOCIAL_FEATURE_ENABLED } from "../shared/features.js";
+import { APP_ID, APP_NAME, MAC_TRAY_GUID } from "../shared/appMetadata.js";
 
 const PET_BASE = { width: 192, height: 208 };
 const PET_STAGE_OFFSET = { x: 28, y: 0 };
@@ -74,8 +75,6 @@ const LEADERBOARD_CALLBACK_PATH = "/leaderboard/auth/callback";
 const MENU_BAR_POPOVER_SIZE = { width: 390, height: 500 };
 const MANAGER_SIZE = { width: 1120, height: 760 };
 const MANAGER_MIN_SIZE = { width: 860, height: 620 };
-const APP_NAME = "Vibe Tree";
-const APP_ID = "com.vibetree.app";
 const SMOKE_TEST = process.env.VIBE_TREE_SMOKE_TEST === "1";
 const USER_DATA_DIR_OVERRIDE = process.env.VIBE_TREE_USER_DATA_DIR?.trim();
 if (USER_DATA_DIR_OVERRIDE) app.setPath("userData", USER_DATA_DIR_OVERRIDE);
@@ -1256,7 +1255,7 @@ function recoverPetWindow() {
 }
 
 function createTray() {
-  tray = new Tray(createTrayIcon());
+  tray = new Tray(createTrayIcon(), process.platform === "darwin" ? MAC_TRAY_GUID : undefined);
   tray.setToolTip(APP_NAME);
   tray.on("click", toggleMenuBarPopover);
   tray.on("right-click", () => {

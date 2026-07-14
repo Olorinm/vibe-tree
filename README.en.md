@@ -49,11 +49,15 @@ npm ci
 npm start
 ```
 
+On macOS, `npm start` builds `dist/Vibe Tree.app` locally, launches the menu bar and Dock under Vibe Tree's stable app identity, and keeps using existing command-line data when present. The local app uses ad-hoc signing and does not require an Apple Developer account.
+
 Development:
 
 ```bash
 npm run dev
 ```
+
+`npm run dev` launches with Electron's development identity. Use it for hot-reload debugging rather than everyday startup.
 
 Checks:
 

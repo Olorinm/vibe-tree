@@ -49,11 +49,15 @@ npm ci
 npm start
 ```
 
+在 macOS 上，`npm start` 会在本机生成 `dist/Vibe Tree.app`，使用固定的 Vibe Tree 应用身份启动菜单栏与 Dock，并自动沿用已有的命令行版本数据。这个本机构建使用 ad-hoc 签名，不需要 Apple Developer 账号。
+
 开发模式：
 
 ```bash
 npm run dev
 ```
+
+`npm run dev` 会直接使用 Electron 的开发身份，只用于热更新调试，不建议作为日常启动方式。
 
 构建检查：
 
