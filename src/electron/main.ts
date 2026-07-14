@@ -40,6 +40,7 @@ import { createLeaderboardService } from "./leaderboard.js";
 import type { LeaderboardRequestJsonOptions } from "./leaderboard.js";
 import { countedInputTokensForEntry, countedTokensForEntry } from "../shared/tokenAccounting.js";
 import { levelProgressForXp, VIBE_TREE_LEVEL_CURVE } from "../shared/leveling.js";
+import { SOCIAL_FEATURE_ENABLED } from "../shared/features.js";
 
 const PET_BASE = { width: 192, height: 208 };
 const PET_STAGE_OFFSET = { x: 28, y: 0 };
@@ -3106,45 +3107,47 @@ ipcMain.on("leaderboard:publish", (event, collection: LeaderboardCollection) => 
     window.webContents.send("bonsai:leaderboard-data", collection);
   }
 });
-ipcMain.handle("social:friends", () => leaderboardService.getSocialFriends());
-ipcMain.handle("social:request-friend", (_event, input) => leaderboardService.requestSocialFriend(input));
-ipcMain.handle("social:accept-friend", (_event, userId: string) => leaderboardService.acceptSocialFriend(userId));
-ipcMain.handle("social:remove-friend", (_event, userId: string) => leaderboardService.removeSocialFriend(userId));
-ipcMain.handle("social:groups", () => leaderboardService.getSocialGroups());
-ipcMain.handle("social:create-group", (_event, input) => leaderboardService.createSocialGroup(input));
-ipcMain.handle("social:create-invite", (_event, groupId: string, input) =>
-  leaderboardService.createSocialGroupInvite(groupId, input),
-);
-ipcMain.handle("social:create-friend-invite", (_event, groupId: string, input) =>
-  leaderboardService.createSocialGroupFriendInvite(groupId, input),
-);
-ipcMain.handle("social:request-group-join", (_event, code: string) => leaderboardService.requestSocialGroupJoin(code));
-ipcMain.handle("social:group-requests:mine", () => leaderboardService.getMySocialGroupRequests());
-ipcMain.handle("social:group-requests:accept", (_event, requestId: string) =>
-  leaderboardService.acceptSocialGroupFriendInvite(requestId),
-);
-ipcMain.handle("social:group-requests:decline", (_event, requestId: string) =>
-  leaderboardService.declineSocialGroupFriendInvite(requestId),
-);
-ipcMain.handle("social:group-requests", (_event, groupId: string) => leaderboardService.getSocialGroupRequests(groupId));
-ipcMain.handle("social:group-requests:approve", (_event, groupId: string, requestId: string) =>
-  leaderboardService.approveSocialGroupRequest(groupId, requestId),
-);
-ipcMain.handle("social:group-requests:moderation-decline", (_event, groupId: string, requestId: string) =>
-  leaderboardService.declineSocialGroupRequest(groupId, requestId),
-);
-ipcMain.handle("social:leave-group", (_event, groupId: string) => leaderboardService.leaveSocialGroup(groupId));
-ipcMain.handle("social:set-group-share-usage", (_event, groupId: string, shareUsage: boolean) =>
-  leaderboardService.setSocialGroupShareUsage(groupId, Boolean(shareUsage)),
-);
-ipcMain.handle("social:get-profile", (_event, userId: string) => leaderboardService.getSocialProfile(userId));
-ipcMain.handle("social:get-profile-privacy", () => leaderboardService.getSocialProfilePrivacy());
-ipcMain.handle("social:update-profile-privacy", (_event, input) =>
-  leaderboardService.updateSocialProfilePrivacy(input),
-);
-ipcMain.handle("social:group-leaderboard", (_event, groupId: string, range?: unknown, basis?: unknown) =>
-  leaderboardService.getSocialGroupLeaderboard(groupId, range, basis),
-);
+if (SOCIAL_FEATURE_ENABLED) {
+  ipcMain.handle("social:friends", () => leaderboardService.getSocialFriends());
+  ipcMain.handle("social:request-friend", (_event, input) => leaderboardService.requestSocialFriend(input));
+  ipcMain.handle("social:accept-friend", (_event, userId: string) => leaderboardService.acceptSocialFriend(userId));
+  ipcMain.handle("social:remove-friend", (_event, userId: string) => leaderboardService.removeSocialFriend(userId));
+  ipcMain.handle("social:groups", () => leaderboardService.getSocialGroups());
+  ipcMain.handle("social:create-group", (_event, input) => leaderboardService.createSocialGroup(input));
+  ipcMain.handle("social:create-invite", (_event, groupId: string, input) =>
+    leaderboardService.createSocialGroupInvite(groupId, input),
+  );
+  ipcMain.handle("social:create-friend-invite", (_event, groupId: string, input) =>
+    leaderboardService.createSocialGroupFriendInvite(groupId, input),
+  );
+  ipcMain.handle("social:request-group-join", (_event, code: string) => leaderboardService.requestSocialGroupJoin(code));
+  ipcMain.handle("social:group-requests:mine", () => leaderboardService.getMySocialGroupRequests());
+  ipcMain.handle("social:group-requests:accept", (_event, requestId: string) =>
+    leaderboardService.acceptSocialGroupFriendInvite(requestId),
+  );
+  ipcMain.handle("social:group-requests:decline", (_event, requestId: string) =>
+    leaderboardService.declineSocialGroupFriendInvite(requestId),
+  );
+  ipcMain.handle("social:group-requests", (_event, groupId: string) => leaderboardService.getSocialGroupRequests(groupId));
+  ipcMain.handle("social:group-requests:approve", (_event, groupId: string, requestId: string) =>
+    leaderboardService.approveSocialGroupRequest(groupId, requestId),
+  );
+  ipcMain.handle("social:group-requests:moderation-decline", (_event, groupId: string, requestId: string) =>
+    leaderboardService.declineSocialGroupRequest(groupId, requestId),
+  );
+  ipcMain.handle("social:leave-group", (_event, groupId: string) => leaderboardService.leaveSocialGroup(groupId));
+  ipcMain.handle("social:set-group-share-usage", (_event, groupId: string, shareUsage: boolean) =>
+    leaderboardService.setSocialGroupShareUsage(groupId, Boolean(shareUsage)),
+  );
+  ipcMain.handle("social:get-profile", (_event, userId: string) => leaderboardService.getSocialProfile(userId));
+  ipcMain.handle("social:get-profile-privacy", () => leaderboardService.getSocialProfilePrivacy());
+  ipcMain.handle("social:update-profile-privacy", (_event, input) =>
+    leaderboardService.updateSocialProfilePrivacy(input),
+  );
+  ipcMain.handle("social:group-leaderboard", (_event, groupId: string, range?: unknown, basis?: unknown) =>
+    leaderboardService.getSocialGroupLeaderboard(groupId, range, basis),
+  );
+}
 ipcMain.handle("cloud-sync:get-status", (): CloudSyncStatus => leaderboardService.cloudStatus());
 ipcMain.handle("cloud-sync:start-new", () => {
   setTreeStartMode("new");
