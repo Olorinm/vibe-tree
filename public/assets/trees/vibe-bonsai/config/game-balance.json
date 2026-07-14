@@ -1,9 +1,4 @@
 {
-  "xp": {
-    "levelBase": 100000,
-    "levelExponent": 1.65,
-    "maxLevel": 120
-  },
   "weather": {
     "rateWindowSeconds": 60,
     "thresholds": [

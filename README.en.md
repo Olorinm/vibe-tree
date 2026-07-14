@@ -31,7 +31,7 @@ Opt into the leaderboard with GitHub. By default, only aggregated token ranking 
 ## Highlights
 
 - **Desktop pixel tree**: always-on-top, draggable, scalable, lockable, and quiet on startup.
-- **Live token weather**: total tokens drive level growth; current token/min drives weather.
+- **Live token weather**: total tokens drive uncapped level growth; current token/min drives weather.
 - **Multi-agent sources**: Codex, Claude Code, OpenClaw, Pi Agent, OpenCode, Gemini, Hermes, and Kimi Code.
 - **Source and model breakdowns**: inspect input, output, cache, and model distribution by agent.
 - **One tree across devices**: sign in with the same GitHub account to sync level, total tokens, achievements, device contributions, and aggregate model share across Windows and Mac.

@@ -1,5 +1,6 @@
 import type { LedgerEntry, TreeAsset } from "../shared/types";
 import { countedTokenBreakdownForEntry } from "../shared/tokenAccounting";
+import { levelProgressForXp } from "../shared/leveling";
 import { clamp, dateKey } from "./format";
 import { emptySourceTotals, historySourceId, xpForEntry } from "./sources";
 import { treeStatsSignature } from "./treeAssets";
@@ -176,24 +177,7 @@ function getSevenDayRows(entries: LedgerEntry[], filter: HistoryFilter = "all", 
 }
 
 function getLevelState(totalXp: number, balance: GameBalance) {
-  let level = 1;
-  let remaining = totalXp;
-  let needed = xpForNextLevel(level, balance);
-  while (remaining >= needed && level < balance.xp.maxLevel) {
-    remaining -= needed;
-    level += 1;
-    needed = xpForNextLevel(level, balance);
-  }
-  return {
-    level,
-    levelXp: remaining,
-    nextLevelXp: needed,
-    progress: needed ? clamp(remaining / needed, 0, 1) : 1,
-  };
-}
-
-function xpForNextLevel(level: number, balance: GameBalance) {
-  return Math.round(balance.xp.levelBase * level ** balance.xp.levelExponent);
+  return levelProgressForXp(totalXp, balance.xp);
 }
 
 function getStageForLevel(level: number, balance: GameBalance) {

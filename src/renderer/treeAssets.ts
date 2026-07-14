@@ -1,4 +1,5 @@
 import type { TreeAsset } from "../shared/types";
+import { VIBE_TREE_LEVEL_CURVE } from "../shared/leveling";
 import type { GameBalance, PureSvgManifest } from "./types";
 
 export const DEFAULT_PURE_SVG_MANIFEST: PureSvgManifest = {
@@ -13,11 +14,7 @@ export const DEFAULT_PURE_SVG_MANIFEST: PureSvgManifest = {
 };
 
 export const DEFAULT_GAME_BALANCE: GameBalance = {
-  xp: {
-    levelBase: 100_000,
-    levelExponent: 1.65,
-    maxLevel: 120,
-  },
+  xp: { ...VIBE_TREE_LEVEL_CURVE },
   weather: {
     rateWindowSeconds: 60,
     thresholds: [
@@ -78,7 +75,6 @@ export function treeStatsSignature(asset: TreeAsset, balance: GameBalance) {
     asset.stages.map((stage) => `${stage.id}:${stage.image}`).join(","),
     balance.xp.levelBase,
     balance.xp.levelExponent,
-    balance.xp.maxLevel,
     balance.weather.rateWindowSeconds,
     balance.activity.activeWindowSeconds,
     balance.activity.peakWindowSeconds,

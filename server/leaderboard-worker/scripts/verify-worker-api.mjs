@@ -17,6 +17,8 @@ const palToken = "verify-pal-token";
 const palTokenHash = createHash("sha256").update(palToken).digest("hex");
 const strangerToken = "verify-stranger-token";
 const strangerTokenHash = createHash("sha256").update(strangerToken).digest("hex");
+const highLevelToken = "verify-high-level-token";
+const highLevelTokenHash = createHash("sha256").update(highLevelToken).digest("hex");
 const now = "2026-05-27T00:00:00.000Z";
 const expiresAt = "2099-01-01T00:00:00.000Z";
 const port = await getFreePort();
@@ -39,6 +41,9 @@ VALUES ('user-pal', 'pal-user', NULL, NULL, '${now}', '${now}');
 INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, created_at, updated_at)
 VALUES ('user-stranger', 'stranger-user', NULL, NULL, '${now}', '${now}');
 
+INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, created_at, updated_at)
+VALUES ('user-high-level', 'high-level-user', NULL, NULL, '${now}', '${now}');
+
 INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
 VALUES ('${tokenHash}', 'user-verify', '${now}', '${expiresAt}');
 
@@ -50,6 +55,9 @@ VALUES ('${palTokenHash}', 'user-pal', '${now}', '${expiresAt}');
 
 INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
 VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
+
+INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
+VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
 `;
 
   devProcess = spawnWrangler([
@@ -531,6 +539,23 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
   // (e) profile cards: relationship-gated access + usage-consent honoring.
   // user-verify and user-friend are co-members (not friends); user-verify is public-global,
   // user-friend is private-global but shares usage in the group; user-stranger has no relationship.
+  await requestJson("/api/usage/daily", {
+    method: "POST",
+    token: highLevelToken,
+    body: {
+      appVersion: "0.8.0-test",
+      forceSync: true,
+      usageStartDate: utcToday,
+      days: [{ date: utcToday, tokens: 12_341_396_271 }],
+      totalTokens: 12_341_396_271,
+      totalXp: 12_341_396_271,
+      totalDaysActive: 1,
+      usagePublic: false,
+    },
+  });
+  const highLevelProfile = await requestJson("/api/social/users/user-high-level/profile", { token: highLevelToken });
+  assert(highLevelProfile.profile?.level === 121, `profile levels should continue past 120, got ${highLevelProfile.profile?.level}`);
+
   const selfProfile = await requestJson("/api/social/users/user-verify/profile");
   assert(selfProfile.profile?.isSelf === true, "own profile should be flagged as self");
   assert(selfProfile.profile?.usageVisible === true, "own profile should always expose usage");

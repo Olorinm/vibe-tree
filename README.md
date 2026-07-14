@@ -31,7 +31,7 @@ Vibe Tree 是一个桌面常驻的 token 天气树。它会读取本地 AI codin
 ## 核心功能
 
 - **桌面像素树**：常驻桌面，支持置顶、拖动、缩放、锁定位置和静默启动。
-- **实时 token 天气**：累计 Token 决定成长等级，当前 token/min 决定天气状态。
+- **实时 token 天气**：累计 Token 决定无上限成长等级，当前 token/min 决定天气状态。
 - **多 Agent 数据源**：支持 Codex、Claude Code、OpenClaw、Pi Agent、OpenCode、Gemini、Hermes 和 Kimi Code。
 - **来源与模型统计**：按 agent 查看 input / output / cache，展开后可查看模型占比。
 - **多设备同养一棵树**：登录同一个 GitHub 账号后，Windows 和 Mac 可以同步等级、累计 Token、成就、设备贡献和聚合模型占比。

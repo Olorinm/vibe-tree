@@ -39,6 +39,7 @@ import type { WeatherId } from "./i18n.js";
 import { createLeaderboardService } from "./leaderboard.js";
 import type { LeaderboardRequestJsonOptions } from "./leaderboard.js";
 import { countedInputTokensForEntry, countedTokensForEntry } from "../shared/tokenAccounting.js";
+import { levelProgressForXp, VIBE_TREE_LEVEL_CURVE } from "../shared/leveling.js";
 
 const PET_BASE = { width: 192, height: 208 };
 const PET_STAGE_OFFSET = { x: 28, y: 0 };
@@ -135,10 +136,6 @@ const WEATHER_THRESHOLDS = [
   { id: "thunder", label: "雷雨", minXpPerMinute: 500_000 },
   { id: "storm", label: "风暴", minXpPerMinute: 1_000_000 },
 ] as const;
-const LEVEL_BASE = 100_000;
-const LEVEL_EXPONENT = 1.65;
-const MAX_LEVEL = 120;
-
 let petWindow: BrowserWindow | null = null;
 let managerWindow: BrowserWindow | null = null;
 let managerRendererReady = false;
@@ -1669,19 +1666,7 @@ function safeTokens(value: number) {
 }
 
 function getLevel(totalXp: number) {
-  let level = 1;
-  let remaining = totalXp;
-  let needed = xpForNextLevel(level);
-  while (remaining >= needed && level < MAX_LEVEL) {
-    remaining -= needed;
-    level += 1;
-    needed = xpForNextLevel(level);
-  }
-  return level;
-}
-
-function xpForNextLevel(level: number) {
-  return Math.round(LEVEL_BASE * level ** LEVEL_EXPONENT);
+  return levelProgressForXp(totalXp, VIBE_TREE_LEVEL_CURVE).level;
 }
 
 function dateKey(date: Date) {

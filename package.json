@@ -12,6 +12,7 @@
     "edit:achievements": "node scripts/achievement-copy-editor.mjs",
     "smoke:electron": "node scripts/smoke-electron.mjs",
     "test:codex-watcher": "npm run build && node scripts/test-codex-session-watcher.mjs",
+    "test:leveling": "npm run build && node scripts/test-level-progression.mjs",
     "verify:cloud-sync": "node scripts/verify-cloud-sync.mjs",
     "verify:worker-api": "node server/leaderboard-worker/scripts/verify-worker-api.mjs",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.json --noEmit",
