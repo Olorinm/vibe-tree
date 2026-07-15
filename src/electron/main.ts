@@ -39,6 +39,10 @@ import type { WeatherId } from "./i18n.js";
 import { createLeaderboardService } from "./leaderboard.js";
 import type { LeaderboardRequestJsonOptions } from "./leaderboard.js";
 import { countedInputTokensForEntry, countedTokensForEntry } from "../shared/tokenAccounting.js";
+import { levelProgressForXp, VIBE_TREE_LEVEL_CURVE } from "../shared/leveling.js";
+import { SOCIAL_FEATURE_ENABLED } from "../shared/features.js";
+import { APP_ID, APP_NAME, MAC_TRAY_GUID } from "../shared/appMetadata.js";
+import { shouldHandoffToMacApp } from "../shared/macAppHandoff.js";
 
 const PET_BASE = { width: 192, height: 208 };
 const PET_STAGE_OFFSET = { x: 28, y: 0 };
@@ -57,10 +61,10 @@ const UPDATE_NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const UPDATE_BUILD_TIMEOUT_MS = 3 * 60 * 1000;
 const UPDATE_SMOKE_TIMEOUT_MS = 45_000;
 const LEDGER_BROADCAST_DEBOUNCE_MS = 250;
-const UPDATE_LATEST_RELEASE_URL = "https://api.github.com/repos/Olorinm/vibe-tree/releases/latest";
-const UPDATE_TAGS_URL = "https://api.github.com/repos/Olorinm/vibe-tree/tags?per_page=20";
-const UPDATE_PAGE_URL = "https://github.com/Olorinm/vibe-tree/releases";
-const DEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/Olorinm/vibe-tree/main/updates/manifest.json";
+const UPDATE_LATEST_RELEASE_URL = "https://api.github.com/repos/open-grove/vibe-tree/releases/latest";
+const UPDATE_TAGS_URL = "https://api.github.com/repos/open-grove/vibe-tree/tags?per_page=20";
+const UPDATE_PAGE_URL = "https://github.com/open-grove/vibe-tree/releases";
+const DEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/open-grove/vibe-tree/main/updates/manifest.json";
 const UPDATE_MANIFEST_URL = (process.env.VIBE_TREE_UPDATE_MANIFEST_URL ?? DEFAULT_UPDATE_MANIFEST_URL).trim();
 const DEFAULT_ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/";
 const DEFAULT_LEADERBOARD_API_URL = "https://vibe-tree-leaderboard.melanthascherffmugutubu.workers.dev";
@@ -72,8 +76,6 @@ const LEADERBOARD_CALLBACK_PATH = "/leaderboard/auth/callback";
 const MENU_BAR_POPOVER_SIZE = { width: 390, height: 500 };
 const MANAGER_SIZE = { width: 1120, height: 760 };
 const MANAGER_MIN_SIZE = { width: 860, height: 620 };
-const APP_NAME = "Vibe Tree";
-const APP_ID = "com.vibetree.app";
 const SMOKE_TEST = process.env.VIBE_TREE_SMOKE_TEST === "1";
 const USER_DATA_DIR_OVERRIDE = process.env.VIBE_TREE_USER_DATA_DIR?.trim();
 if (USER_DATA_DIR_OVERRIDE) app.setPath("userData", USER_DATA_DIR_OVERRIDE);
@@ -135,10 +137,6 @@ const WEATHER_THRESHOLDS = [
   { id: "thunder", label: "雷雨", minXpPerMinute: 500_000 },
   { id: "storm", label: "风暴", minXpPerMinute: 1_000_000 },
 ] as const;
-const LEVEL_BASE = 100_000;
-const LEVEL_EXPONENT = 1.65;
-const MAX_LEVEL = 120;
-
 let petWindow: BrowserWindow | null = null;
 let managerWindow: BrowserWindow | null = null;
 let managerRendererReady = false;
@@ -1258,7 +1256,7 @@ function recoverPetWindow() {
 }
 
 function createTray() {
-  tray = new Tray(createTrayIcon());
+  tray = new Tray(createTrayIcon(), process.platform === "darwin" ? MAC_TRAY_GUID : undefined);
   tray.setToolTip(APP_NAME);
   tray.on("click", toggleMenuBarPopover);
   tray.on("right-click", () => {
@@ -1277,7 +1275,7 @@ function createMacTrayIcon() {
   for (const iconPath of MAC_MENU_BAR_ICON_PATHS) {
     try {
       if (!existsSync(iconPath)) continue;
-      const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
+      const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
       if (icon.isEmpty()) continue;
       icon.setTemplateImage(true);
       return icon;
@@ -1669,19 +1667,7 @@ function safeTokens(value: number) {
 }
 
 function getLevel(totalXp: number) {
-  let level = 1;
-  let remaining = totalXp;
-  let needed = xpForNextLevel(level);
-  while (remaining >= needed && level < MAX_LEVEL) {
-    remaining -= needed;
-    level += 1;
-    needed = xpForNextLevel(level);
-  }
-  return level;
-}
-
-function xpForNextLevel(level: number) {
-  return Math.round(LEVEL_BASE * level ** LEVEL_EXPONENT);
+  return levelProgressForXp(totalXp, VIBE_TREE_LEVEL_CURVE).level;
 }
 
 function dateKey(date: Date) {
@@ -2664,7 +2650,7 @@ async function installUpdate(): Promise<UpdateStatus> {
       installError: undefined,
       needsRestart: true,
     };
-    scheduleUpdateRelaunch();
+    scheduleUpdateRelaunch(cwd);
   } catch (error) {
     updateStatus = {
       ...updateStatus,
@@ -2679,8 +2665,18 @@ async function installUpdate(): Promise<UpdateStatus> {
   return updateStatus;
 }
 
-function scheduleUpdateRelaunch() {
+function scheduleUpdateRelaunch(cwd: string) {
   setTimeout(() => {
+    if (process.platform === "darwin") {
+      void launchMacAppFromRepository(cwd)
+        .then(() => app.exit(0))
+        .catch((error) => {
+          console.error("Failed to restart the updated macOS app", error);
+          app.relaunch({ args: process.argv.slice(1), execPath: process.execPath });
+          app.exit(0);
+        });
+      return;
+    }
     app.relaunch({ args: process.argv.slice(1), execPath: process.execPath });
     app.exit(0);
   }, UPDATE_RELAUNCH_DELAY_MS);
@@ -3045,7 +3041,45 @@ function loginItemArgs() {
   return entry ? [entry] : [];
 }
 
+function launchMacAppFromRepository(cwd: string) {
+  const child = spawn(npmCommand(), ["start"], {
+    cwd,
+    env: process.env,
+    detached: true,
+    shell: false,
+    stdio: "ignore",
+  });
+  return new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+    child.once("error", reject);
+  });
+}
+
 app.whenReady().then(async () => {
+  const handoffRoot = terminalUpdateRoot();
+  if (
+    shouldHandoffToMacApp({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      execPath: process.execPath,
+      isDev,
+      isSmokeTest: SMOKE_TEST,
+      terminalRoot: handoffRoot,
+    })
+  ) {
+    try {
+      await launchMacAppFromRepository(handoffRoot!);
+      app.setActivationPolicy("prohibited");
+      app.quit();
+      return;
+    } catch (error) {
+      console.error("Failed to hand off the raw macOS launch to Vibe Tree.app", error);
+    }
+  }
+
   app.setName(APP_NAME);
   app.setAppUserModelId(APP_ID);
   if (process.platform === "darwin") {
@@ -3121,45 +3155,47 @@ ipcMain.on("leaderboard:publish", (event, collection: LeaderboardCollection) => 
     window.webContents.send("bonsai:leaderboard-data", collection);
   }
 });
-ipcMain.handle("social:friends", () => leaderboardService.getSocialFriends());
-ipcMain.handle("social:request-friend", (_event, input) => leaderboardService.requestSocialFriend(input));
-ipcMain.handle("social:accept-friend", (_event, userId: string) => leaderboardService.acceptSocialFriend(userId));
-ipcMain.handle("social:remove-friend", (_event, userId: string) => leaderboardService.removeSocialFriend(userId));
-ipcMain.handle("social:groups", () => leaderboardService.getSocialGroups());
-ipcMain.handle("social:create-group", (_event, input) => leaderboardService.createSocialGroup(input));
-ipcMain.handle("social:create-invite", (_event, groupId: string, input) =>
-  leaderboardService.createSocialGroupInvite(groupId, input),
-);
-ipcMain.handle("social:create-friend-invite", (_event, groupId: string, input) =>
-  leaderboardService.createSocialGroupFriendInvite(groupId, input),
-);
-ipcMain.handle("social:request-group-join", (_event, code: string) => leaderboardService.requestSocialGroupJoin(code));
-ipcMain.handle("social:group-requests:mine", () => leaderboardService.getMySocialGroupRequests());
-ipcMain.handle("social:group-requests:accept", (_event, requestId: string) =>
-  leaderboardService.acceptSocialGroupFriendInvite(requestId),
-);
-ipcMain.handle("social:group-requests:decline", (_event, requestId: string) =>
-  leaderboardService.declineSocialGroupFriendInvite(requestId),
-);
-ipcMain.handle("social:group-requests", (_event, groupId: string) => leaderboardService.getSocialGroupRequests(groupId));
-ipcMain.handle("social:group-requests:approve", (_event, groupId: string, requestId: string) =>
-  leaderboardService.approveSocialGroupRequest(groupId, requestId),
-);
-ipcMain.handle("social:group-requests:moderation-decline", (_event, groupId: string, requestId: string) =>
-  leaderboardService.declineSocialGroupRequest(groupId, requestId),
-);
-ipcMain.handle("social:leave-group", (_event, groupId: string) => leaderboardService.leaveSocialGroup(groupId));
-ipcMain.handle("social:set-group-share-usage", (_event, groupId: string, shareUsage: boolean) =>
-  leaderboardService.setSocialGroupShareUsage(groupId, Boolean(shareUsage)),
-);
-ipcMain.handle("social:get-profile", (_event, userId: string) => leaderboardService.getSocialProfile(userId));
-ipcMain.handle("social:get-profile-privacy", () => leaderboardService.getSocialProfilePrivacy());
-ipcMain.handle("social:update-profile-privacy", (_event, input) =>
-  leaderboardService.updateSocialProfilePrivacy(input),
-);
-ipcMain.handle("social:group-leaderboard", (_event, groupId: string, range?: unknown, basis?: unknown) =>
-  leaderboardService.getSocialGroupLeaderboard(groupId, range, basis),
-);
+if (SOCIAL_FEATURE_ENABLED) {
+  ipcMain.handle("social:friends", () => leaderboardService.getSocialFriends());
+  ipcMain.handle("social:request-friend", (_event, input) => leaderboardService.requestSocialFriend(input));
+  ipcMain.handle("social:accept-friend", (_event, userId: string) => leaderboardService.acceptSocialFriend(userId));
+  ipcMain.handle("social:remove-friend", (_event, userId: string) => leaderboardService.removeSocialFriend(userId));
+  ipcMain.handle("social:groups", () => leaderboardService.getSocialGroups());
+  ipcMain.handle("social:create-group", (_event, input) => leaderboardService.createSocialGroup(input));
+  ipcMain.handle("social:create-invite", (_event, groupId: string, input) =>
+    leaderboardService.createSocialGroupInvite(groupId, input),
+  );
+  ipcMain.handle("social:create-friend-invite", (_event, groupId: string, input) =>
+    leaderboardService.createSocialGroupFriendInvite(groupId, input),
+  );
+  ipcMain.handle("social:request-group-join", (_event, code: string) => leaderboardService.requestSocialGroupJoin(code));
+  ipcMain.handle("social:group-requests:mine", () => leaderboardService.getMySocialGroupRequests());
+  ipcMain.handle("social:group-requests:accept", (_event, requestId: string) =>
+    leaderboardService.acceptSocialGroupFriendInvite(requestId),
+  );
+  ipcMain.handle("social:group-requests:decline", (_event, requestId: string) =>
+    leaderboardService.declineSocialGroupFriendInvite(requestId),
+  );
+  ipcMain.handle("social:group-requests", (_event, groupId: string) => leaderboardService.getSocialGroupRequests(groupId));
+  ipcMain.handle("social:group-requests:approve", (_event, groupId: string, requestId: string) =>
+    leaderboardService.approveSocialGroupRequest(groupId, requestId),
+  );
+  ipcMain.handle("social:group-requests:moderation-decline", (_event, groupId: string, requestId: string) =>
+    leaderboardService.declineSocialGroupRequest(groupId, requestId),
+  );
+  ipcMain.handle("social:leave-group", (_event, groupId: string) => leaderboardService.leaveSocialGroup(groupId));
+  ipcMain.handle("social:set-group-share-usage", (_event, groupId: string, shareUsage: boolean) =>
+    leaderboardService.setSocialGroupShareUsage(groupId, Boolean(shareUsage)),
+  );
+  ipcMain.handle("social:get-profile", (_event, userId: string) => leaderboardService.getSocialProfile(userId));
+  ipcMain.handle("social:get-profile-privacy", () => leaderboardService.getSocialProfilePrivacy());
+  ipcMain.handle("social:update-profile-privacy", (_event, input) =>
+    leaderboardService.updateSocialProfilePrivacy(input),
+  );
+  ipcMain.handle("social:group-leaderboard", (_event, groupId: string, range?: unknown, basis?: unknown) =>
+    leaderboardService.getSocialGroupLeaderboard(groupId, range, basis),
+  );
+}
 ipcMain.handle("cloud-sync:get-status", (): CloudSyncStatus => leaderboardService.cloudStatus());
 ipcMain.handle("cloud-sync:start-new", () => {
   setTreeStartMode("new");

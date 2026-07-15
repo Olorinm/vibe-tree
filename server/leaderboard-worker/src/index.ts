@@ -1,3 +1,5 @@
+import { levelProgressForXp, VIBE_TREE_LEVEL_CURVE } from "../../../src/shared/leveling";
+
 export interface Env {
   DB: D1Database;
   APP_ORIGIN?: string;
@@ -36,10 +38,6 @@ const SYNC_COOLDOWN_SECONDS = 30;
 const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
 const LEADERBOARD_RANGES: LeaderboardRange[] = ["24h", "7d", "30d", "all"];
 const leaderboardCache = new Map<LeaderboardRange, { expiresAt: number; updatedAt: string; entries: LeaderboardEntry[] }>();
-const PROFILE_LEVEL_BASE = 100_000;
-const PROFILE_LEVEL_EXPONENT = 1.65;
-const PROFILE_MAX_LEVEL = 120;
-
 interface SocialProfilePrivacy {
   profileVisibility: SocialProfileVisibility;
   showLevel: boolean;
@@ -2230,15 +2228,7 @@ function normalizeSocialProfileVisibility(value: unknown): SocialProfileVisibili
 }
 
 function levelForProfileTokens(totalXp: number) {
-  let level = 1;
-  let remaining = Math.max(0, Math.round(totalXp));
-  let needed = Math.round(PROFILE_LEVEL_BASE * level ** PROFILE_LEVEL_EXPONENT);
-  while (remaining >= needed && level < PROFILE_MAX_LEVEL) {
-    remaining -= needed;
-    level += 1;
-    needed = Math.round(PROFILE_LEVEL_BASE * level ** PROFILE_LEVEL_EXPONENT);
-  }
-  return level;
+  return levelProgressForXp(totalXp, VIBE_TREE_LEVEL_CURVE).level;
 }
 
 async function usageTotalsForUser(userId: string, env: Env): Promise<UsageTotals> {

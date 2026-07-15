@@ -67,7 +67,6 @@ export interface GameBalance {
   xp: {
     levelBase: number;
     levelExponent: number;
-    maxLevel: number;
   };
   weather: {
     rateWindowSeconds: number;

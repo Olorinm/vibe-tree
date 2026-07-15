@@ -67,6 +67,7 @@ import {
   xpForEntry,
 } from "./sources";
 import { StatsCache, summarizeXpProgression } from "./stats";
+import { VIBE_TREE_LEVEL_CURVE } from "../shared/leveling";
 import { DEFAULT_GAME_BALANCE, DEFAULT_PURE_SVG_MANIFEST, buildTreeAsset } from "./treeAssets";
 import type {
   AchievementCategoryFilter,
@@ -1090,11 +1091,11 @@ async function refreshTreeConfig() {
         (res) => res.json() as Promise<PureSvgManifest>,
       ),
       fetch(assetUrl("/assets/trees/vibe-bonsai/config/game-balance.json")).then(
-        (res) => res.json() as Promise<GameBalance>,
+        (res) => res.json() as Promise<Omit<GameBalance, "xp">>,
       ),
     ]);
     tree = buildTreeAsset(manifest);
-    gameBalance = balance;
+    gameBalance = { ...balance, xp: { ...VIBE_TREE_LEVEL_CURVE } };
     render();
   } catch (error) {
     console.warn("Failed to refresh tree config", error);

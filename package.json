@@ -1,6 +1,6 @@
 {
   "name": "vibe-tree",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "productName": "Vibe Tree",
   "private": true,
   "type": "module",
@@ -9,20 +9,25 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && vite build",
+    "package:mac": "npm run build && node scripts/package-macos-app.mjs",
     "edit:achievements": "node scripts/achievement-copy-editor.mjs",
     "smoke:electron": "node scripts/smoke-electron.mjs",
     "test:codex-watcher": "npm run build && node scripts/test-codex-session-watcher.mjs",
+    "test:leveling": "npm run build && node scripts/test-level-progression.mjs",
+    "test:mac-handoff": "npm run build && node scripts/test-macos-app-handoff.mjs",
+    "test:mac-package": "node scripts/test-macos-package.mjs",
+    "test:mac-start": "node scripts/test-macos-start.mjs",
     "verify:cloud-sync": "node scripts/verify-cloud-sync.mjs",
     "verify:worker-api": "node server/leaderboard-worker/scripts/verify-worker-api.mjs",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.json --noEmit",
-    "start": "npm run build && electron dist/electron/main.js"
+    "start": "node scripts/start.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/qrcode": "^1.5.6",
-    "electron": "^33.2.1",
+    "electron": "^39.8.5",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.4.3"
   },
   "dependencies": {
     "html-to-image": "^1.11.13",

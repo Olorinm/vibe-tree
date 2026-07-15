@@ -2,6 +2,51 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.8.1",
+      "publishedAt": "2026-07-15",
+      "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.8.1",
+      "title": {
+        "zh-CN": "Vibe Tree v0.8.1",
+        "en-US": "Vibe Tree v0.8.1"
+      },
+      "summary": {
+        "zh-CN": "macOS 菜单栏小树现在使用稳定的 Vibe Tree 应用身份运行；等级成长不再封顶。",
+        "en-US": "The macOS menu bar tree now runs under a stable Vibe Tree app identity, and level growth is no longer capped."
+      },
+      "highlights": {
+        "zh-CN": [
+          "macOS 会生成本地 Vibe Tree.app，Dock 和菜单栏不再显示为通用 Electron 应用。",
+          "沿用原有本机小树和统计数据，不需要 Apple Developer 账号。",
+          "等级可以继续成长，不再停在原有最高等级。",
+          "社交页暂时下线；好友和群组数据不会删除，排行榜、同养小树和云同步继续可用。"
+        ],
+        "en-US": [
+          "macOS now creates a local Vibe Tree.app so the Dock and menu bar no longer use the generic Electron identity.",
+          "Existing local tree and usage data are retained, and no Apple Developer account is required.",
+          "Levels can continue growing beyond the previous maximum.",
+          "The Social page is temporarily unavailable; friend and group data are preserved, while leaderboards, shared trees, and cloud sync remain available."
+        ]
+      },
+      "fixes": {
+        "zh-CN": [
+          "修复 macOS 命令行启动仍沿用通用 Electron 身份的问题。",
+          "内置更新完成后会自动切换到新的 Vibe Tree 应用身份。"
+        ],
+        "en-US": [
+          "Fixed macOS command-line startup continuing to use the generic Electron identity.",
+          "After an in-app update, Vibe Tree now switches automatically to the new app identity."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "本次更新不改变上传内容。"
+        ],
+        "en-US": [
+          "This update does not change uploaded content."
+        ]
+      }
+    },
+    {
       "version": "0.8.0",
       "publishedAt": "2026-07-14",
       "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.8.0",

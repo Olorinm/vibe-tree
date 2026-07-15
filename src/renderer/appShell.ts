@@ -1,4 +1,5 @@
 import type { ViewMode } from "./types";
+import { SOCIAL_FEATURE_ENABLED } from "../shared/features";
 
 export function appShellHtml(viewMode: ViewMode) {
   if (viewMode === "pet") {
@@ -142,7 +143,7 @@ export function appShellHtml(viewMode: ViewMode) {
           <button type="button" data-dashboard-tab="home" data-i18n="home">主页</button>
           <button type="button" data-dashboard-tab="achievements" data-i18n="achievements">成就</button>
           <button type="button" data-dashboard-tab="leaderboard" data-i18n="leaderboard">排行榜</button>
-          <button type="button" data-dashboard-tab="social" data-i18n="social">社交</button>
+          ${SOCIAL_FEATURE_ENABLED ? '<button type="button" data-dashboard-tab="social" data-i18n="social">社交</button>' : ""}
         </nav>
 
       </aside>
