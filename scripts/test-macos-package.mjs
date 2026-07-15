@@ -31,7 +31,9 @@ const plistValue = (key) =>
 assert(existsSync(appPath), "Vibe Tree.app should exist");
 assert(plistValue("CFBundleIdentifier") === metadata.APP_ID, "the app bundle id should match shared metadata");
 assert(plistValue("CFBundleDisplayName") === metadata.APP_NAME, "the app display name should match shared metadata");
+assert(plistValue("CFBundleExecutable") === metadata.APP_NAME, "the app executable name should match shared metadata");
 assert(plistValue("CFBundleShortVersionString") === projectPackage.version, "the app version should match package.json");
+assert(existsSync(join(appPath, `Contents/MacOS/${metadata.APP_NAME}`)), "the named Vibe Tree executable should exist");
 assert(appPackage.productName === metadata.APP_NAME, "the packaged Electron product name should match shared metadata");
 assert(buildMarker.appId === metadata.APP_ID && buildMarker.buildFingerprint, "the reusable build marker should be valid");
 assert(packagedMetadata.includes(metadata.MAC_TRAY_GUID), "the packaged app should contain the stable tray GUID");

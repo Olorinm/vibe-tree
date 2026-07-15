@@ -42,6 +42,7 @@ import { countedInputTokensForEntry, countedTokensForEntry } from "../shared/tok
 import { levelProgressForXp, VIBE_TREE_LEVEL_CURVE } from "../shared/leveling.js";
 import { SOCIAL_FEATURE_ENABLED } from "../shared/features.js";
 import { APP_ID, APP_NAME, MAC_TRAY_GUID } from "../shared/appMetadata.js";
+import { shouldHandoffToMacApp } from "../shared/macAppHandoff.js";
 
 const PET_BASE = { width: 192, height: 208 };
 const PET_STAGE_OFFSET = { x: 28, y: 0 };
@@ -60,10 +61,10 @@ const UPDATE_NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const UPDATE_BUILD_TIMEOUT_MS = 3 * 60 * 1000;
 const UPDATE_SMOKE_TIMEOUT_MS = 45_000;
 const LEDGER_BROADCAST_DEBOUNCE_MS = 250;
-const UPDATE_LATEST_RELEASE_URL = "https://api.github.com/repos/Olorinm/vibe-tree/releases/latest";
-const UPDATE_TAGS_URL = "https://api.github.com/repos/Olorinm/vibe-tree/tags?per_page=20";
-const UPDATE_PAGE_URL = "https://github.com/Olorinm/vibe-tree/releases";
-const DEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/Olorinm/vibe-tree/main/updates/manifest.json";
+const UPDATE_LATEST_RELEASE_URL = "https://api.github.com/repos/open-grove/vibe-tree/releases/latest";
+const UPDATE_TAGS_URL = "https://api.github.com/repos/open-grove/vibe-tree/tags?per_page=20";
+const UPDATE_PAGE_URL = "https://github.com/open-grove/vibe-tree/releases";
+const DEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/open-grove/vibe-tree/main/updates/manifest.json";
 const UPDATE_MANIFEST_URL = (process.env.VIBE_TREE_UPDATE_MANIFEST_URL ?? DEFAULT_UPDATE_MANIFEST_URL).trim();
 const DEFAULT_ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/";
 const DEFAULT_LEADERBOARD_API_URL = "https://vibe-tree-leaderboard.melanthascherffmugutubu.workers.dev";
@@ -1274,7 +1275,7 @@ function createMacTrayIcon() {
   for (const iconPath of MAC_MENU_BAR_ICON_PATHS) {
     try {
       if (!existsSync(iconPath)) continue;
-      const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
+      const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
       if (icon.isEmpty()) continue;
       icon.setTemplateImage(true);
       return icon;
@@ -2649,7 +2650,7 @@ async function installUpdate(): Promise<UpdateStatus> {
       installError: undefined,
       needsRestart: true,
     };
-    scheduleUpdateRelaunch();
+    scheduleUpdateRelaunch(cwd);
   } catch (error) {
     updateStatus = {
       ...updateStatus,
@@ -2664,8 +2665,18 @@ async function installUpdate(): Promise<UpdateStatus> {
   return updateStatus;
 }
 
-function scheduleUpdateRelaunch() {
+function scheduleUpdateRelaunch(cwd: string) {
   setTimeout(() => {
+    if (process.platform === "darwin") {
+      void launchMacAppFromRepository(cwd)
+        .then(() => app.exit(0))
+        .catch((error) => {
+          console.error("Failed to restart the updated macOS app", error);
+          app.relaunch({ args: process.argv.slice(1), execPath: process.execPath });
+          app.exit(0);
+        });
+      return;
+    }
     app.relaunch({ args: process.argv.slice(1), execPath: process.execPath });
     app.exit(0);
   }, UPDATE_RELAUNCH_DELAY_MS);
@@ -3030,7 +3041,45 @@ function loginItemArgs() {
   return entry ? [entry] : [];
 }
 
+function launchMacAppFromRepository(cwd: string) {
+  const child = spawn(npmCommand(), ["start"], {
+    cwd,
+    env: process.env,
+    detached: true,
+    shell: false,
+    stdio: "ignore",
+  });
+  return new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+    child.once("error", reject);
+  });
+}
+
 app.whenReady().then(async () => {
+  const handoffRoot = terminalUpdateRoot();
+  if (
+    shouldHandoffToMacApp({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      execPath: process.execPath,
+      isDev,
+      isSmokeTest: SMOKE_TEST,
+      terminalRoot: handoffRoot,
+    })
+  ) {
+    try {
+      await launchMacAppFromRepository(handoffRoot!);
+      app.setActivationPolicy("prohibited");
+      app.quit();
+      return;
+    } catch (error) {
+      console.error("Failed to hand off the raw macOS launch to Vibe Tree.app", error);
+    }
+  }
+
   app.setName(APP_NAME);
   app.setAppUserModelId(APP_ID);
   if (process.platform === "darwin") {

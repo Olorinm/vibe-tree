@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-15 (v0.8.1)
+
+- Made macOS command-line startup build and launch a local `Vibe Tree.app` with a stable menu bar and Dock identity while keeping existing local data.
+- Added an automatic handoff from legacy raw Electron launches to the local app bundle, including the first restart after an in-app update from v0.8.0.
+- Updated the Electron runtime so macOS can preserve the menu bar item's identity across launches.
+- Removed the Vibe Tree level cap so growth can continue beyond the previous maximum level.
+- Temporarily withdrew the Social page while preserving existing friend and group data; leaderboards, shared trees, and cloud sync remain available.
+
 ## 2026-07-14 (v0.8.0)
 
 - Added Kimi Code token tracking from local `~/.kimi-code/sessions/**/wire.jsonl` usage records, including settings, source filters, status, and model breakdowns.

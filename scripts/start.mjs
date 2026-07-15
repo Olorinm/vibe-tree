@@ -46,8 +46,10 @@ async function stopRunningMacApp(executablePath) {
 
 async function startMacApp() {
   const appPath = join(root, "dist/Vibe Tree.app");
-  const executablePath = join(appPath, "Contents/MacOS/Electron");
+  const executablePath = join(appPath, "Contents/MacOS/Vibe Tree");
+  const legacyExecutablePath = join(appPath, "Contents/MacOS/Electron");
   await stopRunningMacApp(executablePath);
+  await stopRunningMacApp(legacyExecutablePath);
 
   const packageEnv = { ...process.env };
   const userDataDir = macUserDataOverride();

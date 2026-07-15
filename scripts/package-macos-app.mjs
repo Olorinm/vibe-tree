@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { computeMacBuildFingerprint } from "./macos-package-support.mjs";
@@ -30,12 +30,14 @@ if (!existsSync(metadataPath)) throw new Error("Compiled app metadata is missing
 if (!existsSync(iconSource)) throw new Error(`App icon not found: ${iconSource}`);
 
 const { APP_ID, APP_NAME } = await import(pathToFileURL(metadataPath).href);
+const legacyExecutablePath = join(outputApp, "Contents/MacOS/Electron");
+const executablePath = join(outputApp, `Contents/MacOS/${APP_NAME}`);
 
 function appIsRunning() {
   if (!existsSync(outputApp)) return false;
-  const executablePath = join(outputApp, "Contents/MacOS/Electron");
   const processList = execFileSync("/bin/ps", ["-axo", "command="], { encoding: "utf8" });
-  return processList.split("\n").some((line) => line.trim() === executablePath);
+  const executablePaths = new Set([executablePath, legacyExecutablePath]);
+  return processList.split("\n").some((line) => executablePaths.has(line.trim()));
 }
 
 const fingerprintPaths = [
@@ -67,6 +69,7 @@ if (appIsRunning()) throw new Error("Vibe Tree.app is running. Quit it before re
 
 rmSync(outputApp, { force: true, recursive: true });
 execFileSync("/usr/bin/ditto", [sourceApp, outputApp]);
+renameSync(legacyExecutablePath, executablePath);
 
 rmSync(packagedAppDir, { force: true, recursive: true });
 mkdirSync(packagedAppDir, { recursive: true });
@@ -90,6 +93,7 @@ writeFileSync(
 const setPlist = (key, value) => execFileSync(plistBuddy, ["-c", `Set :${key} ${value}`, plistPath]);
 setPlist("CFBundleDisplayName", APP_NAME);
 setPlist("CFBundleName", APP_NAME);
+setPlist("CFBundleExecutable", APP_NAME);
 setPlist("CFBundleIdentifier", APP_ID);
 setPlist("CFBundleShortVersionString", version);
 setPlist("CFBundleVersion", version);
