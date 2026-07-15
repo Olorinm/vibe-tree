@@ -2,6 +2,37 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.8.2",
+      "publishedAt": "2026-07-15",
+      "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.8.2",
+      "title": {
+        "zh-CN": "Vibe Tree v0.8.2",
+        "en-US": "Vibe Tree v0.8.2"
+      },
+      "summary": {
+        "zh-CN": "修复部分新版 macOS 上，已经允许 Vibe Tree 显示在菜单栏，但小树入口仍然不可见的问题。",
+        "en-US": "Fixed the Vibe Tree menu bar entry remaining invisible on some recent macOS versions even when it was allowed in System Settings."
+      },
+      "highlights": {
+        "zh-CN": [
+          "菜单栏小树改用原生 macOS 状态项显示。",
+          "点击小树仍会打开原来的成长浮窗，右键菜单保持不变。"
+        ],
+        "en-US": [
+          "The menu bar tree now uses a native macOS status item.",
+          "Clicking the tree still opens the existing growth popover, and the context menu is unchanged."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "本次更新只调整本机菜单栏显示，不改变同步或上传内容。"
+        ],
+        "en-US": [
+          "This update only changes the local menu bar display and does not change synced or uploaded data."
+        ]
+      }
+    },
+    {
       "version": "0.8.1",
       "publishedAt": "2026-07-15",
       "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.8.1",

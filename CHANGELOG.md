@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-07-15 (v0.8.2)
+
+- Fixed the Vibe Tree menu bar item remaining invisible on macOS 26 even when it was enabled in System Settings, using a native AppKit status item while preserving the existing popover and context menu.
+
 ## 2026-07-15 (v0.8.1)
 
 - Made macOS command-line startup build and launch a local `Vibe Tree.app` with a stable menu bar and Dock identity while keeping existing local data.

@@ -162,6 +162,10 @@ let updateStatus: UpdateStatus = {
 let tray: Tray | null = null;
 let trayContextMenu: ReturnType<typeof Menu.buildFromTemplate> | null = null;
 let trayMenuReopenTimer: ReturnType<typeof setTimeout> | null = null;
+let macMenuBarHelper: ReturnType<typeof spawn> | null = null;
+let macMenuBarHelperBuffer = "";
+let lastMacMenuBarPoint: Electron.Point | null = null;
+let isQuitting = false;
 let ledgerBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
 let ledger: LedgerFile = { entries: [], settings: DEFAULT_SETTINGS, installedAt: startOfLocalDayIso(new Date()) };
 let ledgerEntryIds = new Set<string>();
@@ -1256,6 +1260,15 @@ function recoverPetWindow() {
 }
 
 function createTray() {
+  if (startMacMenuBarHelper()) {
+    refreshTrayMenu();
+    return;
+  }
+  createElectronTray();
+}
+
+function createElectronTray() {
+  if (tray) return;
   tray = new Tray(createTrayIcon(), process.platform === "darwin" ? MAC_TRAY_GUID : undefined);
   tray.setToolTip(APP_NAME);
   tray.on("click", toggleMenuBarPopover);
@@ -1264,6 +1277,76 @@ function createTray() {
     if (trayContextMenu) tray?.popUpContextMenu(trayContextMenu);
   });
   refreshTrayMenu();
+}
+
+function startMacMenuBarHelper() {
+  if (process.platform !== "darwin" || !app.isPackaged) return false;
+  const systemMajor = Number.parseInt(process.getSystemVersion().split(".")[0] ?? "0", 10);
+  if (!Number.isFinite(systemMajor) || systemMajor < 26) return false;
+
+  const helperPath = join(process.resourcesPath, "bin", "vibe-tree-menu-bar-helper");
+  const iconPath = MAC_MENU_BAR_ICON_PATHS.find((candidate) => existsSync(candidate));
+  if (!existsSync(helperPath) || !iconPath) return false;
+
+  const helper = spawn(helperPath, [iconPath, String(process.pid)], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  macMenuBarHelper = helper;
+  macMenuBarHelperBuffer = "";
+  helper.stdout.setEncoding("utf8");
+  helper.stdout.on("data", (chunk: string) => {
+    macMenuBarHelperBuffer += chunk;
+    const lines = macMenuBarHelperBuffer.split(/\r?\n/);
+    macMenuBarHelperBuffer = lines.pop() ?? "";
+    for (const line of lines) handleMacMenuBarHelperEvent(line.trim());
+  });
+  helper.once("error", (error) => {
+    if (macMenuBarHelper !== helper) return;
+    console.error("Failed to start the native macOS menu bar helper", error);
+    macMenuBarHelper = null;
+    createElectronTray();
+  });
+  helper.once("exit", (code, signal) => {
+    if (macMenuBarHelper !== helper) return;
+    macMenuBarHelper = null;
+    if (isQuitting) return;
+    console.error(`Native macOS menu bar helper exited (${code ?? signal ?? "unknown"})`);
+    createElectronTray();
+  });
+  return true;
+}
+
+function handleMacMenuBarHelperEvent(message: string) {
+  const [eventName, appKitX, appKitY] = message.split("\t");
+  const x = Number(appKitX);
+  const y = Number(appKitY);
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    const primaryBounds = screen.getPrimaryDisplay().bounds;
+    lastMacMenuBarPoint = {
+      x: Math.round(x),
+      y: Math.round(primaryBounds.y + primaryBounds.height - y),
+    };
+  } else {
+    lastMacMenuBarPoint = screen.getCursorScreenPoint();
+  }
+  if (eventName === "left-click") {
+    toggleMenuBarPopover();
+    return;
+  }
+  if (eventName !== "right-click") return;
+  hideMenuBarPopover();
+  refreshTrayMenu();
+  showTrayContextMenu();
+}
+
+function showTrayContextMenu() {
+  if (!trayContextMenu) return;
+  if (tray) {
+    tray.popUpContextMenu(trayContextMenu);
+    return;
+  }
+  const point = lastMacMenuBarPoint ?? screen.getCursorScreenPoint();
+  trayContextMenu.popup({ x: point.x, y: point.y });
 }
 
 function createTrayIcon() {
@@ -1315,7 +1398,9 @@ function applyMenuBarWindowSpaceBehavior(window: BrowserWindow) {
 }
 
 function positionMenuBarWindow(window: BrowserWindow) {
-  const anchorBounds = tray?.getBounds();
+  const cursor = lastMacMenuBarPoint ?? screen.getCursorScreenPoint();
+  const anchorBounds = tray?.getBounds() ??
+    (macMenuBarHelper ? { x: cursor.x - 9, y: cursor.y - 9, width: 18, height: 18 } : undefined);
   if (!anchorBounds) return;
   const display = screen.getDisplayMatching(anchorBounds);
   const workArea = display.workArea;
@@ -1448,7 +1533,6 @@ function totalUnitMenuItems(): MenuItemConstructorOptions[] {
 }
 
 function refreshTrayMenu() {
-  if (!tray) return;
   const trayStats = getTrayStats();
   trayContextMenu = Menu.buildFromTemplate([
     {
@@ -1574,8 +1658,8 @@ function refreshTrayMenu() {
       click: () => app.quit(),
     },
   ]);
-  tray.setContextMenu(process.platform === "darwin" ? null : trayContextMenu);
-  tray.setToolTip(`${APP_NAME} · Lv.${trayStats.level} · ${trayStats.weatherLabel}`);
+  tray?.setContextMenu(process.platform === "darwin" ? null : trayContextMenu);
+  tray?.setToolTip(`${APP_NAME} · Lv.${trayStats.level} · ${trayStats.weatherLabel}`);
 }
 
 function updateTrayMenuLabel() {
@@ -1587,13 +1671,13 @@ function updateTrayMenuLabel() {
 }
 
 function reopenTrayMenuSoon(delayMs = 120) {
-  if (!tray) return;
+  if (!tray && !macMenuBarHelper) return;
   if (trayMenuReopenTimer) clearTimeout(trayMenuReopenTimer);
   trayMenuReopenTimer = setTimeout(() => {
     trayMenuReopenTimer = null;
-    if (!tray) return;
+    if (!tray && !macMenuBarHelper) return;
     refreshTrayMenu();
-    if (trayContextMenu) tray.popUpContextMenu(trayContextMenu);
+    showTrayContextMenu();
   }, delayMs);
 }
 
@@ -3123,6 +3207,9 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
+  macMenuBarHelper?.kill();
+  macMenuBarHelper = null;
   flushPendingUsageEntries();
   stopUsageWatchers();
   if (updateCheckTimer) clearTimeout(updateCheckTimer);
