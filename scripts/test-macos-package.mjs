@@ -24,6 +24,8 @@ const projectPackage = JSON.parse(readFileSync(join(root, "package.json"), "utf8
 const appPackage = JSON.parse(readFileSync(join(resourcesDir, "app/package.json"), "utf8"));
 const buildMarker = JSON.parse(readFileSync(join(resourcesDir, "vibe-tree-build.json"), "utf8"));
 const packagedMetadata = readFileSync(join(resourcesDir, "app/shared/appMetadata.js"), "utf8");
+const menuBarHelperSource = join(root, "src/native/macosMenuBarHelper.swift");
+const menuBarHelperPath = join(resourcesDir, "bin/vibe-tree-menu-bar-helper");
 const plistBuddy = "/usr/libexec/PlistBuddy";
 const plistValue = (key) =>
   execFileSync(plistBuddy, ["-c", `Print :${key}`, plistPath], { encoding: "utf8" }).trim();
@@ -37,6 +39,13 @@ assert(existsSync(join(appPath, `Contents/MacOS/${metadata.APP_NAME}`)), "the na
 assert(appPackage.productName === metadata.APP_NAME, "the packaged Electron product name should match shared metadata");
 assert(buildMarker.appId === metadata.APP_ID && buildMarker.buildFingerprint, "the reusable build marker should be valid");
 assert(packagedMetadata.includes(metadata.MAC_TRAY_GUID), "the packaged app should contain the stable tray GUID");
+assert(existsSync(menuBarHelperPath), "the native macOS menu bar helper should be packaged");
+const menuBarHelperCheck = execFileSync(
+  menuBarHelperPath,
+  ["--check", join(resourcesDir, "app/renderer/assets/menu-bar-sprout.png")],
+  { encoding: "utf8" },
+);
+assert(menuBarHelperCheck.includes("helper check passed"), "the menu bar helper should load its packaged icon");
 execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath], { stdio: "ignore" });
 
 const expectedFingerprint = computeMacBuildFingerprint({
@@ -48,6 +57,7 @@ const expectedFingerprint = computeMacBuildFingerprint({
     join(root, "dist/shared"),
     join(root, "package.json"),
     join(root, "public/assets/app-icon.png"),
+    menuBarHelperSource,
     join(sourceApp, "Contents/Info.plist"),
     packageScriptPath,
   ],

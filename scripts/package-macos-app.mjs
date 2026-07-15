@@ -21,6 +21,8 @@ const buildMarkerPath = join(resourcesDir, "vibe-tree-build.json");
 const iconSource = join(root, "public/assets/app-icon.png");
 const iconsetDir = join(root, "dist/.vibe-tree.iconset");
 const iconPath = join(resourcesDir, "vibe-tree.icns");
+const menuBarHelperSource = join(root, "src/native/macosMenuBarHelper.swift");
+const menuBarHelperPath = join(resourcesDir, "bin/vibe-tree-menu-bar-helper");
 const userDataDir = process.env.VIBE_TREE_PACKAGE_USER_DATA_DIR?.trim();
 const plistBuddy = "/usr/libexec/PlistBuddy";
 
@@ -28,6 +30,7 @@ if (!existsSync(sourceApp)) throw new Error(`Electron.app not found: ${sourceApp
 if (!existsSync(join(root, "dist/electron/main.js"))) throw new Error("Run npm run build before packaging.");
 if (!existsSync(metadataPath)) throw new Error("Compiled app metadata is missing. Run npm run build before packaging.");
 if (!existsSync(iconSource)) throw new Error(`App icon not found: ${iconSource}`);
+if (!existsSync(menuBarHelperSource)) throw new Error(`Menu bar helper source not found: ${menuBarHelperSource}`);
 
 const { APP_ID, APP_NAME } = await import(pathToFileURL(metadataPath).href);
 const legacyExecutablePath = join(outputApp, "Contents/MacOS/Electron");
@@ -46,6 +49,7 @@ const fingerprintPaths = [
   join(root, "dist/shared"),
   join(root, "package.json"),
   iconSource,
+  menuBarHelperSource,
   join(sourceApp, "Contents/Info.plist"),
   fileURLToPath(import.meta.url),
 ];
@@ -136,6 +140,13 @@ for (const [size, name] of iconSizes) {
 }
 execFileSync("/usr/bin/iconutil", ["-c", "icns", iconsetDir, "-o", iconPath]);
 rmSync(iconsetDir, { force: true, recursive: true });
+
+mkdirSync(join(resourcesDir, "bin"), { recursive: true });
+execFileSync(
+  "/usr/bin/xcrun",
+  ["swiftc", "-O", "-framework", "AppKit", menuBarHelperSource, "-o", menuBarHelperPath],
+  { stdio: "inherit" },
+);
 
 writeFileSync(
   buildMarkerPath,
