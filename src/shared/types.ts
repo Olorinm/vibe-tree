@@ -338,6 +338,7 @@ export interface Settings {
   geminiSessionsDir?: string;
   hermesSessionsDir?: string;
   kimiSessionsDir?: string;
+  deepseekSessionsDir?: string;
 }
 
 export interface LedgerFile {
@@ -412,6 +413,7 @@ export interface UsageStatus {
   geminiSession: SessionMonitorStatus;
   hermesSession: SessionMonitorStatus;
   kimiSession: SessionMonitorStatus;
+  deepseekSession: SessionMonitorStatus;
 }
 
 export interface SessionMonitorStatus {

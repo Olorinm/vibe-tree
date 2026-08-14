@@ -738,6 +738,13 @@ export function appShellHtml(viewMode: ViewMode) {
                       </label>
                       <input id="kimiSessionsDirInput" type="text" placeholder="~/.kimi-code/sessions" aria-label="Kimi Code path" />
                     </div>
+                    <div class="agent-source-row">
+                      <label class="agent-source-toggle">
+                        <input type="checkbox" data-stats-source="deepseek" />
+                        <span data-i18n="deepseekPath">DeepSeek Harness 路径</span>
+                      </label>
+                      <input id="deepseekSessionsDirInput" type="text" placeholder="~/.dsh/sessions" aria-label="DeepSeek Harness path" />
+                    </div>
                   </div>
                 </section>
               </div>

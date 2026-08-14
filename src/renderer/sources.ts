@@ -11,6 +11,7 @@ export const AGENT_SOURCES = [
   { id: "gemini", label: "Gemini", statusKey: "geminiSession" },
   { id: "hermes", label: "Hermes", statusKey: "hermesSession" },
   { id: "kimi", label: "Kimi Code", statusKey: "kimiSession" },
+  { id: "deepseek", label: "DeepSeek Harness", statusKey: "deepseekSession" },
   { id: "cloud", label: "Cloud Tree", statusKey: undefined },
 ] as const satisfies ReadonlyArray<AgentSource>;
 
@@ -77,6 +78,7 @@ function historySourceIdForSource(source: string, agent?: string): HistorySource
   if (source === "gemini-session" || agent === "gemini") return "gemini";
   if (source === "hermes-session" || agent === "hermes") return "hermes";
   if (source === "kimi-session" || Boolean(agent?.startsWith("kimi-code"))) return "kimi";
+  if (source === "deepseek-session" || agent === "deepseek-harness" || Boolean(agent?.startsWith("deepseek-harness:"))) return "deepseek";
   return undefined;
 }
 
@@ -130,6 +132,7 @@ export function sourceMatchesBreakdownRow(row: SourceBreakdown, sourceId: Histor
   if (sourceId === "gemini") return row.id === "gemini" || row.id === "gemini-session" || row.label === "Gemini";
   if (sourceId === "hermes") return row.id === "hermes" || row.id === "hermes-session" || row.label === "Hermes";
   if (sourceId === "kimi") return row.id === "kimi-code" || row.id === "kimi-session" || row.label === "Kimi Code" || row.id.startsWith("kimi-code:");
+  if (sourceId === "deepseek") return row.id === "deepseek-harness" || row.id === "deepseek-session" || row.label === "DeepSeek Harness" || row.id.startsWith("deepseek-harness:");
   if (sourceId === "cloud") return row.id === "cloud-sync" || row.label === "Cloud Tree";
   return false;
 }
@@ -161,6 +164,7 @@ export function entryMatchesSourceKey(entry: LedgerEntry, sourceKey: string) {
   if (sourceKey === "gemini") return source === "gemini-session" || entry.agent === "gemini";
   if (sourceKey === "hermes") return source === "hermes-session" || entry.agent === "hermes";
   if (sourceKey === "kimi") return source === "kimi-session" || Boolean(entry.agent?.startsWith("kimi-code"));
+  if (sourceKey === "deepseek") return source === "deepseek-session" || entry.agent === "deepseek-harness" || Boolean(entry.agent?.startsWith("deepseek-harness:"));
   if (sourceKey === "cloud") return entry.source === "cloud-sync" && !inferredSource;
   if (sourceKey.startsWith("source:")) {
     const id = sourceKey.slice("source:".length);
@@ -183,6 +187,8 @@ export function defaultSourceLabel(id: string, source: string, manualLabel: stri
   if (id === "hermes" || source === "hermes-session") return "Hermes";
   if (id.startsWith("kimi-code:")) return `Kimi ${id.replace("kimi-code:", "")}`;
   if (id === "kimi-code" || source === "kimi-session") return "Kimi Code";
+  if (id.startsWith("deepseek-harness:")) return `DeepSeek ${id.replace("deepseek-harness:", "")}`;
+  if (id === "deepseek-harness" || source === "deepseek-session") return "DeepSeek Harness";
   if (id === "cloud-sync" || source === "cloud-sync") return "Cloud Tree";
   return id;
 }
@@ -202,10 +208,11 @@ const SAFE_CLOUD_EVENT_SOURCES = new Set([
   "gemini-session",
   "hermes-session",
   "kimi-session",
+  "deepseek-session",
 ]);
 
 export function emptySourceTotals(): Record<HistorySourceId, number> {
-  return { codex: 0, openclaw: 0, pi: 0, opencode: 0, claude: 0, gemini: 0, hermes: 0, kimi: 0, cloud: 0 };
+  return { codex: 0, openclaw: 0, pi: 0, opencode: 0, claude: 0, gemini: 0, hermes: 0, kimi: 0, deepseek: 0, cloud: 0 };
 }
 
 export function safeTokens(value: number) {

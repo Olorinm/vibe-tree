@@ -2658,6 +2658,8 @@ const SAFE_TREE_EVENT_SOURCES = new Set([
   "opencode-session",
   "gemini-session",
   "hermes-session",
+  "kimi-session",
+  "deepseek-session",
   "cloud-sync",
 ]);
 

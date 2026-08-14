@@ -696,6 +696,8 @@ button {
 .menubar-rhythm-bar.src-claude { background: color-mix(in srgb, var(--token-cache-read) 78%, var(--bg-light)); }
 .menubar-rhythm-bar.src-opencode { background: color-mix(in srgb, var(--token-cache-write) 82%, var(--bg-light)); }
 .menubar-rhythm-bar.src-gemini { background: color-mix(in srgb, #8ab4f8 78%, var(--bg-light)); }
+.menubar-rhythm-bar.src-kimi { background: color-mix(in srgb, #c084fc 78%, var(--bg-light)); }
+.menubar-rhythm-bar.src-deepseek { background: color-mix(in srgb, #34d399 78%, var(--bg-light)); }
 .menubar-rhythm-bar.src-pi { background: color-mix(in srgb, #ff6b6b 76%, var(--bg-light)); }
 .menubar-rhythm-bar.src-hermes { background: color-mix(in srgb, #fbbc04 78%, var(--bg-light)); }
 .menubar-rhythm-bar.src-cloud { background: color-mix(in srgb, #7dd3fc 78%, var(--bg-light)); }
@@ -871,6 +873,8 @@ button {
 .menubar-row-icon.src-claude { background: var(--token-cache-read); }
 .menubar-row-icon.src-opencode { background: var(--token-cache-write); }
 .menubar-row-icon.src-gemini { background: #8ab4f8; }
+.menubar-row-icon.src-kimi { background: #c084fc; }
+.menubar-row-icon.src-deepseek { background: #34d399; }
 .menubar-row-icon.src-pi { background: #ff6b6b; }
 .menubar-row-icon.src-hermes { background: #fbbc04; }
 .menubar-row-icon.src-cloud { background: #7dd3fc; }
@@ -965,6 +969,8 @@ button {
 .menubar-source-stack-segment[data-source="claude"] { background: var(--token-cache-read); }
 .menubar-source-stack-segment[data-source="opencode"] { background: var(--token-cache-write); }
 .menubar-source-stack-segment[data-source="gemini"] { background: #8ab4f8; }
+.menubar-source-stack-segment[data-source="kimi"] { background: #c084fc; }
+.menubar-source-stack-segment[data-source="deepseek"] { background: #34d399; }
 .menubar-source-stack-segment[data-source="pi"] { background: #ff6b6b; }
 .menubar-source-stack-segment[data-source="hermes"] { background: #fbbc04; }
 .menubar-source-stack-segment[data-source="cloud"] { background: #7dd3fc; }
@@ -1009,6 +1015,8 @@ button {
 .menubar-source-dot[data-source="claude"] { background: var(--token-cache-read); }
 .menubar-source-dot[data-source="opencode"] { background: var(--token-cache-write); }
 .menubar-source-dot[data-source="gemini"] { background: #8ab4f8; }
+.menubar-source-dot[data-source="kimi"] { background: #c084fc; }
+.menubar-source-dot[data-source="deepseek"] { background: #34d399; }
 .menubar-source-dot[data-source="pi"] { background: #ff6b6b; }
 .menubar-source-dot[data-source="hermes"] { background: #fbbc04; }
 .menubar-source-dot[data-source="cloud"] { background: #7dd3fc; }
@@ -5462,6 +5470,14 @@ label,
   background: #8ab4f8;
 }
 
+.history-tooltip-dot.kimi {
+  background: #c084fc;
+}
+
+.history-tooltip-dot.deepseek {
+  background: #34d399;
+}
+
 .history-tooltip-dot.pi {
   background: #ff6b6b;
 }
@@ -5497,6 +5513,16 @@ label,
 .legend-gemini,
 .history-segment.gemini {
   background: #8ab4f8;
+}
+
+.legend-kimi,
+.history-segment.kimi {
+  background: #c084fc;
+}
+
+.legend-deepseek,
+.history-segment.deepseek {
+  background: #34d399;
 }
 
 .legend-pi,
