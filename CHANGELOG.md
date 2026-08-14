@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added DeepSeek Harness token tracking from append-only `session.jsonl` and concatenated `session.jsonl.zstd` files, with incremental scanning, restart-safe deduplication, source settings, and cloud-sync source preservation.
+
 ## 2026-07-15 (v0.8.2)
 
 - Fixed the Vibe Tree menu bar item remaining invisible on macOS 26 even when it was enabled in System Settings, using a native AppKit status item while preserving the existing popover and context menu.

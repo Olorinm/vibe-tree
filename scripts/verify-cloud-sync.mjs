@@ -551,6 +551,7 @@ const safeCloudSources = new Set([
   "gemini-session",
   "hermes-session",
   "kimi-session",
+  "deepseek-session",
   "cloud-sync",
 ]);
 
@@ -612,6 +613,31 @@ assert(
   "cloud sync should preserve Kimi aggregate model totals",
 );
 kimiDevice.service.stop();
+
+const deepseekCloud = createFakeCloud();
+const deepseekDevice = createDevice("deepseek-device", "deepseek-device-id", deepseekCloud, {
+  entries: [
+    {
+      ...localEntry("deepseek-session:usage-record", "deepseek-device-id", "deepseek-session", "2026-05-27T00:45:00.000Z", 880),
+      model: "deepseek-chat",
+    },
+  ],
+});
+deepseekDevice.ledger.settings.cloudSyncEnabled = true;
+deepseekDevice.ledger.settings.treeStartMode = "new";
+status = await deepseekDevice.service.syncCloudTree({ force: true });
+assert(!status.error, `DeepSeek cloud sync failed: ${status.error}`);
+assert(
+  deepseekCloud.events.get("deepseek-session:usage-record")?.source === "deepseek-session",
+  "cloud sync should preserve the DeepSeek Harness source category",
+);
+assert(
+  [...deepseekCloud.modelStats.values()].some(
+    (row) => row.source === "deepseek-session" && row.model === "deepseek-chat" && row.tokens === 880,
+  ),
+  "cloud sync should preserve DeepSeek Harness aggregate model totals",
+);
+deepseekDevice.service.stop();
 
 const cloud = createFakeCloud();
 const repairedWinEntry = {

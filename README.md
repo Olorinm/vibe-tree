@@ -32,7 +32,7 @@ Vibe Tree 是一个桌面常驻的 token 天气树。它会读取本地 AI codin
 
 - **桌面像素树**：常驻桌面，支持置顶、拖动、缩放、锁定位置和静默启动。
 - **实时 token 天气**：累计 Token 决定无上限成长等级，当前 token/min 决定天气状态。
-- **多 Agent 数据源**：支持 Codex、Claude Code、OpenClaw、Pi Agent、OpenCode、Gemini、Hermes 和 Kimi Code。
+- **多 Agent 数据源**：支持 Codex、Claude Code、OpenClaw、Pi Agent、OpenCode、Gemini、Hermes、Kimi Code 和 DeepSeek Harness。
 - **来源与模型统计**：按 agent 查看 input / output / cache，展开后可查看模型占比。
 - **多设备同养一棵树**：登录同一个 GitHub 账号后，Windows 和 Mac 可以同步等级、累计 Token、成就、设备贡献和聚合模型占比。
 - **最近 7 天图表**：按来源筛选近期 token 使用趋势。
@@ -66,6 +66,8 @@ npm run typecheck
 npm run build
 ```
 
+DeepSeek Harness 的开发和手工验证步骤见 [集成说明](docs/DEEPSEEK_HARNESS.md)。
+
 如果 Electron 二进制从 GitHub 下载较慢，可以临时使用国内镜像：
 
 ```bash
@@ -92,6 +94,7 @@ electron_mirror=https://npmmirror.com/mirrors/electron/
 | Gemini | ✅ | 本地 Gemini 会话目录 |
 | Hermes | ✅ | 本地 Hermes 会话目录 |
 | Kimi Code | ✅ | `~/.kimi-code/sessions/**/wire.jsonl` |
+| DeepSeek Harness | ✅ | macOS/Linux：`$HOME/.dsh/sessions/**/session.jsonl[.zstd]`；Windows：`%USERPROFILE%\.dsh\sessions\**\session.jsonl[.zstd]`；也支持 `$DSH_HOME/sessions` |
 
 安装后会自动检测默认路径。也可以在设置面板里自定义每个 agent 的数据路径，或关闭不想统计的来源。
 
@@ -120,6 +123,8 @@ Vibe Tree 优先做本地统计。默认不会上传代码、提示词、文件�
 
 部分 provider 会把缓存输入包含在 `inputTokens` 里；Anthropic 会单独上报 cache read / write。Vibe Tree 会按每次请求的总 token 消耗计入成长，并对已包含在 `inputTokens` 里的缓存输入只计一次，避免双算。
 
+DeepSeek Harness 的 `TokenUsage` 将未缓存 input、output、cache read / write 分栏上报，Vibe Tree 会直接保留这些分栏并按总计规则计入。
+
 默认从安装当天开始统计，安装日前的历史不会计入，除非通过环境变量显式导入历史。
 
 ## 导入历史数据
@@ -132,6 +137,7 @@ VIBE_CLAUDE_IMPORT_HISTORY=today \
 VIBE_OPENCLAW_IMPORT_HISTORY=today \
 VIBE_OPENCODE_IMPORT_HISTORY=today \
 VIBE_KIMI_IMPORT_HISTORY=today \
+VIBE_DEEPSEEK_IMPORT_HISTORY=today \
 npm start
 ```
 
@@ -143,6 +149,7 @@ $env:VIBE_CLAUDE_IMPORT_HISTORY="today"
 $env:VIBE_OPENCLAW_IMPORT_HISTORY="today"
 $env:VIBE_OPENCODE_IMPORT_HISTORY="today"
 $env:VIBE_KIMI_IMPORT_HISTORY="today"
+$env:VIBE_DEEPSEEK_IMPORT_HISTORY="today"
 npm start
 ```
 

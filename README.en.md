@@ -32,7 +32,7 @@ Opt into the leaderboard with GitHub. By default, only aggregated token ranking 
 
 - **Desktop pixel tree**: always-on-top, draggable, scalable, lockable, and quiet on startup.
 - **Live token weather**: total tokens drive uncapped level growth; current token/min drives weather.
-- **Multi-agent sources**: Codex, Claude Code, OpenClaw, Pi Agent, OpenCode, Gemini, Hermes, and Kimi Code.
+- **Multi-agent sources**: Codex, Claude Code, OpenClaw, Pi Agent, OpenCode, Gemini, Hermes, Kimi Code, and DeepSeek Harness.
 - **Source and model breakdowns**: inspect input, output, cache, and model distribution by agent.
 - **One tree across devices**: sign in with the same GitHub account to sync level, total tokens, achievements, device contributions, and aggregate model share across Windows and Mac.
 - **Recent 7-day chart**: filter token trends by source.
@@ -66,6 +66,8 @@ npm run typecheck
 npm run build
 ```
 
+See [DEEPSEEK_HARNESS.md](docs/DEEPSEEK_HARNESS.md) for the DeepSeek Harness development and manual verification loop.
+
 If Electron downloads slowly from GitHub, temporarily use a mirror:
 
 ```bash
@@ -92,6 +94,7 @@ electron_mirror=https://npmmirror.com/mirrors/electron/
 | Gemini | ✅ | local Gemini session directory |
 | Hermes | ✅ | local Hermes session directory |
 | Kimi Code | ✅ | `~/.kimi-code/sessions/**/wire.jsonl` |
+| DeepSeek Harness | ✅ | macOS/Linux: `$HOME/.dsh/sessions/**/session.jsonl[.zstd]`; Windows: `%USERPROFILE%\.dsh\sessions\**\session.jsonl[.zstd]`; `$DSH_HOME/sessions` is also supported |
 
 Vibe Tree auto-detects the default paths after installation. You can customize source paths or disable sources in settings.
 
@@ -120,6 +123,8 @@ Counted Token = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens
 
 Some providers include cached input in `inputTokens`; Anthropic reports cache read / write separately. Vibe Tree counts total token consumption per request and counts cached input only once when it is already included in `inputTokens`.
 
+DeepSeek Harness `TokenUsage` reports uncached input, output, cache read, and cache write as separate buckets; Vibe Tree preserves those buckets and applies the counted-token rule directly.
+
 By default, statistics start from the installation day. Older history is ignored unless explicitly imported with environment variables.
 
 ## Import History
@@ -132,6 +137,7 @@ VIBE_CLAUDE_IMPORT_HISTORY=today \
 VIBE_OPENCLAW_IMPORT_HISTORY=today \
 VIBE_OPENCODE_IMPORT_HISTORY=today \
 VIBE_KIMI_IMPORT_HISTORY=today \
+VIBE_DEEPSEEK_IMPORT_HISTORY=today \
 npm start
 ```
 
@@ -143,6 +149,7 @@ $env:VIBE_CLAUDE_IMPORT_HISTORY="today"
 $env:VIBE_OPENCLAW_IMPORT_HISTORY="today"
 $env:VIBE_OPENCODE_IMPORT_HISTORY="today"
 $env:VIBE_KIMI_IMPORT_HISTORY="today"
+$env:VIBE_DEEPSEEK_IMPORT_HISTORY="today"
 npm start
 ```
 

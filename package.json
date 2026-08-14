@@ -13,6 +13,7 @@
     "edit:achievements": "node scripts/achievement-copy-editor.mjs",
     "smoke:electron": "node scripts/smoke-electron.mjs",
     "test:codex-watcher": "npm run build && node scripts/test-codex-session-watcher.mjs",
+    "test:deepseek-watcher": "npm run build && node scripts/test-deepseek-session-watcher.mjs",
     "test:leveling": "npm run build && node scripts/test-level-progression.mjs",
     "test:mac-handoff": "npm run build && node scripts/test-macos-app-handoff.mjs",
     "test:mac-package": "node scripts/test-macos-package.mjs",

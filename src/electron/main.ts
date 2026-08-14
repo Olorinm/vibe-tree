@@ -34,6 +34,7 @@ import {
   startPiSessionWatcher,
 } from "./agentSessionWatchers.js";
 import { startCodexSessionWatcher } from "./codexSessionWatcher.js";
+import { startDeepSeekSessionWatcher } from "./deepseekSessionWatcher.js";
 import { MAIN_TEXT, WEATHER_LABELS } from "./i18n.js";
 import type { WeatherId } from "./i18n.js";
 import { createLeaderboardService } from "./leaderboard.js";
@@ -79,9 +80,9 @@ const MANAGER_MIN_SIZE = { width: 860, height: 620 };
 const SMOKE_TEST = process.env.VIBE_TREE_SMOKE_TEST === "1";
 const USER_DATA_DIR_OVERRIDE = process.env.VIBE_TREE_USER_DATA_DIR?.trim();
 if (USER_DATA_DIR_OVERRIDE) app.setPath("userData", USER_DATA_DIR_OVERRIDE);
-const STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "kimi", "cloud"] as const;
+const STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "kimi", "deepseek", "cloud"] as const;
 const PRE_KIMI_STAT_SOURCE_IDS = ["codex", "openclaw", "pi", "opencode", "claude", "gemini", "hermes", "cloud"] as const;
-const SOURCE_CATALOG_VERSION = 1;
+const SOURCE_CATALOG_VERSION = 2;
 // Menu bar popover components, in their canonical default order. Must mirror
 // MENUBAR_VIZ_IDS in the renderer.
 const MENUBAR_VIZ_IDS = ["rhythm", "sync", "activity", "rank", "sources", "speed"] as const;
@@ -180,6 +181,7 @@ let opencodeSessionWatcher: ReturnType<typeof startOpenCodeSessionWatcher> | nul
 let geminiSessionWatcher: ReturnType<typeof startGeminiSessionWatcher> | null = null;
 let hermesSessionWatcher: ReturnType<typeof startHermesSessionWatcher> | null = null;
 let kimiSessionWatcher: ReturnType<typeof startKimiSessionWatcher> | null = null;
+let deepseekSessionWatcher: ReturnType<typeof startDeepSeekSessionWatcher> | null = null;
 let codexSessionStatus: UsageStatus["codexSession"] = {
   running: false,
   sessionsRoot: "",
@@ -237,6 +239,14 @@ let hermesSessionStatus: UsageStatus["hermesSession"] = {
   importHistory: false,
 };
 let kimiSessionStatus: UsageStatus["kimiSession"] = {
+  running: false,
+  sessionsRoot: "",
+  exists: false,
+  filesWatched: 0,
+  eventsImported: 0,
+  importHistory: false,
+};
+let deepseekSessionStatus: UsageStatus["deepseekSession"] = {
   running: false,
   sessionsRoot: "",
   exists: false,
@@ -643,6 +653,7 @@ function normalizeSettings(settings: Partial<Settings>): Settings {
     geminiSessionsDir: cleanPath(settings.geminiSessionsDir),
     hermesSessionsDir: cleanPath(settings.hermesSessionsDir),
     kimiSessionsDir: cleanPath(settings.kimiSessionsDir),
+    deepseekSessionsDir: cleanPath(settings.deepseekSessionsDir),
   };
 }
 
@@ -693,13 +704,20 @@ function normalizeEnabledSourceIds(value: unknown, sourceCatalogVersion: unknown
   if (!Array.isArray(value)) return [...STAT_SOURCE_IDS];
   const allowed = new Set<string>(STAT_SOURCE_IDS);
   const normalized = [...new Set(value.filter((item): item is string => typeof item === "string" && allowed.has(item)))];
+  const previousCatalogVersion = typeof sourceCatalogVersion === "number" && Number.isFinite(sourceCatalogVersion)
+    ? Math.floor(sourceCatalogVersion)
+    : 0;
   const hadAllPrePiSources = PRE_KIMI_STAT_SOURCE_IDS.filter((source) => source !== "pi").every((source) =>
     normalized.includes(source),
   );
   if (hadAllPrePiSources && !normalized.includes("pi")) normalized.splice(2, 0, "pi");
-  if (sourceCatalogVersion !== SOURCE_CATALOG_VERSION && !normalized.includes("kimi")) {
+  if (previousCatalogVersion < 1 && !normalized.includes("kimi")) {
     const cloudIndex = normalized.indexOf("cloud");
     normalized.splice(cloudIndex >= 0 ? cloudIndex : normalized.length, 0, "kimi");
+  }
+  if (previousCatalogVersion < 2 && !normalized.includes("deepseek")) {
+    const cloudIndex = normalized.indexOf("cloud");
+    normalized.splice(cloudIndex >= 0 ? cloudIndex : normalized.length, 0, "deepseek");
   }
   if (!normalized.includes("cloud")) normalized.push("cloud");
   return normalized;
@@ -1269,7 +1287,10 @@ function createTray() {
 
 function createElectronTray() {
   if (tray) return;
-  tray = new Tray(createTrayIcon(), process.platform === "darwin" ? MAC_TRAY_GUID : undefined);
+  const icon = createTrayIcon();
+  // Electron's Windows Tray constructor rejects an explicit `undefined` GUID.
+  // Only macOS needs the stable identifier here.
+  tray = process.platform === "darwin" ? new Tray(icon, MAC_TRAY_GUID) : new Tray(icon);
   tray.setToolTip(APP_NAME);
   tray.on("click", toggleMenuBarPopover);
   tray.on("right-click", () => {
@@ -1609,6 +1630,10 @@ function refreshTrayMenu() {
       label: sourceStatusLabel("Kimi Code", kimiSessionStatus, "kimi-session"),
       enabled: false,
     },
+    {
+      label: sourceStatusLabel("DeepSeek Harness", deepseekSessionStatus, "deepseek-session"),
+      enabled: false,
+    },
     { type: "separator" },
     {
       label: mainText("petSize"),
@@ -1829,6 +1854,7 @@ function updateSettings(partial: Partial<Settings>) {
     previous.geminiSessionsDir !== ledger.settings.geminiSessionsDir ||
     previous.hermesSessionsDir !== ledger.settings.hermesSessionsDir ||
     previous.kimiSessionsDir !== ledger.settings.kimiSessionsDir ||
+    previous.deepseekSessionsDir !== ledger.settings.deepseekSessionsDir ||
     previous.enabledSourceIds.join(",") !== ledger.settings.enabledSourceIds.join(",")
   ) {
     restartUsageWatchers();
@@ -2236,6 +2262,7 @@ const SAFE_CLOUD_EVENT_SOURCES = new Set([
   "gemini-session",
   "hermes-session",
   "kimi-session",
+  "deepseek-session",
   "cloud-sync",
 ]);
 
@@ -2293,6 +2320,7 @@ function getUsageStatus(): UsageStatus {
     geminiSession: geminiSessionStatus,
     hermesSession: hermesSessionStatus,
     kimiSession: kimiSessionStatus,
+    deepseekSession: deepseekSessionStatus,
   };
 }
 
@@ -3078,6 +3106,18 @@ function startUsageWatchers() {
       },
     });
   }
+  if (enabledSources.has("deepseek")) {
+    deepseekSessionWatcher = startDeepSeekSessionWatcher({
+      ...common,
+      sessionsRoot: ledger.settings.deepseekSessionsDir,
+      onUsage: appendUsageEvent,
+      onStatus: (status) => {
+        deepseekSessionStatus = status;
+        refreshTrayMenu();
+        broadcast("bonsai:usage-status", getUsageStatus());
+      },
+    });
+  }
   broadcast("bonsai:usage-status", getUsageStatus());
 }
 
@@ -3090,6 +3130,7 @@ function stopUsageWatchers() {
   geminiSessionWatcher?.close();
   hermesSessionWatcher?.close();
   kimiSessionWatcher?.close();
+  deepseekSessionWatcher?.close();
   codexSessionWatcher = null;
   claudeSessionWatcher = null;
   openclawSessionWatcher = null;
@@ -3098,6 +3139,7 @@ function stopUsageWatchers() {
   geminiSessionWatcher = null;
   hermesSessionWatcher = null;
   kimiSessionWatcher = null;
+  deepseekSessionWatcher = null;
 }
 
 function restartUsageWatchers() {

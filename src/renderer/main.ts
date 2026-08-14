@@ -411,6 +411,7 @@ const opencodeSessionsDirInput = document.querySelector<HTMLInputElement>("#open
 const geminiSessionsDirInput = document.querySelector<HTMLInputElement>("#geminiSessionsDirInput");
 const hermesSessionsDirInput = document.querySelector<HTMLInputElement>("#hermesSessionsDirInput");
 const kimiSessionsDirInput = document.querySelector<HTMLInputElement>("#kimiSessionsDirInput");
+const deepseekSessionsDirInput = document.querySelector<HTMLInputElement>("#deepseekSessionsDirInput");
 const leaderboardStatusText = document.querySelector<HTMLElement>("#leaderboardStatusText");
 const leaderboardUserCard = document.querySelector<HTMLElement>("#leaderboardUserCard");
 const leaderboardAutoSyncInput = document.querySelector<HTMLInputElement>("#leaderboardAutoSyncInput");
@@ -520,6 +521,7 @@ function setupHistoryCard() {
         <button type="button" data-history-filter="gemini">Gemini</button>
         <button type="button" data-history-filter="hermes">Hermes</button>
         <button type="button" data-history-filter="kimi">Kimi Code</button>
+        <button type="button" data-history-filter="deepseek">DeepSeek Harness</button>
       </div>
     </div>
     <div class="history-legend" id="historyLegend" aria-label="token 类型" data-i18n-aria="historyTokenAria">
@@ -1535,6 +1537,9 @@ function bindEvents() {
   kimiSessionsDirInput?.addEventListener("change", () =>
     updatePathSetting("kimiSessionsDir", kimiSessionsDirInput),
   );
+  deepseekSessionsDirInput?.addEventListener("change", () =>
+    updatePathSetting("deepseekSessionsDir", deepseekSessionsDirInput),
+  );
 
   historyTabs?.addEventListener("click", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-history-filter]");
@@ -1850,7 +1855,8 @@ async function updatePathSetting(
     | "opencodeSessionsDir"
     | "geminiSessionsDir"
     | "hermesSessionsDir"
-    | "kimiSessionsDir",
+    | "kimiSessionsDir"
+    | "deepseekSessionsDir",
   input: HTMLInputElement,
 ) {
   if (!ledger) return;
@@ -3983,6 +3989,7 @@ function render() {
     syncInputValue(geminiSessionsDirInput, ledger.settings.geminiSessionsDir ?? "");
     syncInputValue(hermesSessionsDirInput, ledger.settings.hermesSessionsDir ?? "");
     syncInputValue(kimiSessionsDirInput, ledger.settings.kimiSessionsDir ?? "");
+    syncInputValue(deepseekSessionsDirInput, ledger.settings.deepseekSessionsDir ?? "");
 
     renderUpdateStatus();
     renderCloudSyncSettings();

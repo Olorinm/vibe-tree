@@ -22,8 +22,9 @@ Vibe Tree 会从本机的 agent 使用记录中提取 token 计数字段、时�
 | Gemini | `~/.gemini/tmp` | 本地 Gemini session JSON / JSONL |
 | Hermes | `~/.hermes/state.db` | Hermes 本地状态数据库 |
 | Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` | Kimi Code 本地 usage 记录 |
+| DeepSeek Harness | macOS/Linux `$HOME/.dsh/sessions/**/session.jsonl[.zstd]`；Windows `%USERPROFILE%\.dsh\sessions\**\session.jsonl[.zstd]` | DeepSeek Harness 本地 session usage 记录；也支持 `$DSH_HOME/sessions` |
 
-这些默认路径可以在设置面板的 Agent 路径中覆盖。相关环境变量如 `VIBE_CODEX_SESSIONS_DIR`、`VIBE_CLAUDE_SESSIONS_DIR`、`VIBE_OPENCODE_SESSIONS_DIR` 等也可以覆盖默认路径。
+这些默认路径可以在设置面板的 Agent 路径中覆盖。相关环境变量如 `VIBE_CODEX_SESSIONS_DIR`、`VIBE_CLAUDE_SESSIONS_DIR`、`VIBE_OPENCODE_SESSIONS_DIR`、`VIBE_DEEPSEEK_SESSIONS_DIR` 等也可以覆盖默认路径；DeepSeek Harness 未指定自定义路径时还会遵循 `DSH_HOME`。
 
 ### 本地保存什么
 
@@ -111,8 +112,9 @@ Vibe Tree extracts token accounting fields, timestamps, source, provider, and mo
 | Gemini | `~/.gemini/tmp` | Local Gemini session JSON / JSONL |
 | Hermes | `~/.hermes/state.db` | Hermes local state database |
 | Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` | Local Kimi Code usage records |
+| DeepSeek Harness | macOS/Linux `$HOME/.dsh/sessions/**/session.jsonl[.zstd]`; Windows `%USERPROFILE%\.dsh\sessions\**\session.jsonl[.zstd]` | Local DeepSeek Harness session usage records; `$DSH_HOME/sessions` is also supported |
 
-These paths can be overridden in the Agent Paths settings. Environment variables such as `VIBE_CODEX_SESSIONS_DIR`, `VIBE_CLAUDE_SESSIONS_DIR`, and `VIBE_OPENCODE_SESSIONS_DIR` can also override defaults.
+These paths can be overridden in the Agent Paths settings. Environment variables such as `VIBE_CODEX_SESSIONS_DIR`, `VIBE_CLAUDE_SESSIONS_DIR`, `VIBE_OPENCODE_SESSIONS_DIR`, and `VIBE_DEEPSEEK_SESSIONS_DIR` can also override defaults; DeepSeek Harness also follows `DSH_HOME` when no custom path is set.
 
 ### What Vibe Tree Stores Locally
 

@@ -1665,6 +1665,7 @@ const SAFE_CLOUD_EVENT_SOURCES = new Set([
   "gemini-session",
   "hermes-session",
   "kimi-session",
+  "deepseek-session",
   "cloud-sync",
 ]);
 
