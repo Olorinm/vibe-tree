@@ -19,6 +19,10 @@ const strangerToken = "verify-stranger-token";
 const strangerTokenHash = createHash("sha256").update(strangerToken).digest("hex");
 const highLevelToken = "verify-high-level-token";
 const highLevelTokenHash = createHash("sha256").update(highLevelToken).digest("hex");
+const pageToken = "verify-page-token";
+const pageTokenHash = createHash("sha256").update(pageToken).digest("hex");
+const transitionToken = "verify-transition-token";
+const transitionTokenHash = createHash("sha256").update(transitionToken).digest("hex");
 const now = "2026-05-27T00:00:00.000Z";
 const expiresAt = "2099-01-01T00:00:00.000Z";
 const port = await getFreePort();
@@ -44,6 +48,12 @@ VALUES ('user-stranger', 'stranger-user', NULL, NULL, '${now}', '${now}');
 INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, created_at, updated_at)
 VALUES ('user-high-level', 'high-level-user', NULL, NULL, '${now}', '${now}');
 
+INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, created_at, updated_at)
+VALUES ('user-page', 'page-user', NULL, NULL, '${now}', '${now}');
+
+INSERT OR REPLACE INTO users (user_id, username, avatar_url, profile_url, created_at, updated_at)
+VALUES ('user-transition', 'transition-user', NULL, NULL, '${now}', '${now}');
+
 INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
 VALUES ('${tokenHash}', 'user-verify', '${now}', '${expiresAt}');
 
@@ -58,6 +68,25 @@ VALUES ('${strangerTokenHash}', 'user-stranger', '${now}', '${expiresAt}');
 
 INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
 VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
+
+INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
+VALUES ('${pageTokenHash}', 'user-page', '${now}', '${expiresAt}');
+
+INSERT OR REPLACE INTO sessions (token_hash, user_id, created_at, expires_at)
+VALUES ('${transitionTokenHash}', 'user-transition', '${now}', '${expiresAt}');
+
+WITH RECURSIVE seq(value) AS (
+  SELECT 1
+  UNION ALL
+  SELECT value + 1 FROM seq WHERE value < 1005
+)
+INSERT INTO tree_usage_buckets (
+  user_id, device_id, bucket_id, started_at, source, model, tokens, event_count, app_version, updated_at
+)
+SELECT
+  'user-page', 'page-device', printf('hour-v2-page-%04d', value),
+  '2026-05-01T00:00:00.000Z', 'codex-session', NULL, value, 1, 'test', '${now}'
+FROM seq;
 `;
 
   devProcess = spawnWrangler([
@@ -87,14 +116,61 @@ VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
   let cloudTree = await requestJson("/api/tree");
   assert(cloudTree.summary?.hasRemoteTree === false, "empty cloud tree summary should not report an existing tree");
 
+  const firstTreePage = await requestJson("/api/tree", { token: pageToken });
+  assert(firstTreePage.entries?.length === 1000, "cloud tree should cap each response at the page size");
+  assert(typeof firstTreePage.nextPage === "string", "cloud tree should return a continuation cursor");
+  const secondTreePage = await requestJson(`/api/tree?page=${encodeURIComponent(firstTreePage.nextPage)}`, {
+    token: pageToken,
+  });
+  assert(secondTreePage.entries?.length === 5, "cloud tree continuation should return every remaining bucket");
+  assert(!secondTreePage.nextPage, "final cloud tree page should not return another continuation");
+  assert(
+    new Set([...firstTreePage.entries, ...secondTreePage.entries].map((entry) => entry.id)).size === 1005,
+    "cloud tree pagination should not skip or duplicate equal-time buckets",
+  );
+
+  await requestJson("/api/tree/events", {
+    method: "POST",
+    token: transitionToken,
+    body: {
+      deviceId: "legacy-device",
+      modelStats: [
+        { date: "2026-05-01", source: "codex-session", model: "legacy-model", tokens: 50 },
+      ],
+      appVersion: "0.5.5-test",
+    },
+  });
+  const legacyTree = await requestJson("/api/tree", { token: transitionToken });
+  assert(legacyTree.entries?.length === 1, "legacy aggregate compatibility should seed an existing cloud tree");
+  await delay(5);
+  await requestJson("/api/tree/events", {
+    method: "POST",
+    token: transitionToken,
+    body: {
+      deviceId: "legacy-device",
+      aggregationVersion: 2,
+      replaceLegacyUsageBuckets: true,
+      deviceStats: { entryCount: 0, tokens: 0 },
+      appVersion: "0.8.2-test",
+    },
+  });
+  const transitionDelta = await requestJson(
+    `/api/tree/delta?since=${encodeURIComponent(legacyTree.cursor)}`,
+    { token: transitionToken },
+  );
+  assert(
+    transitionDelta.deletedEntryIds?.includes(legacyTree.entries[0].id),
+    "v2 transition should tombstone legacy compatibility buckets",
+  );
+
   await requestJson("/api/tree/events", {
     method: "POST",
     body: {
       deviceId: "zero-token-device",
       device: { alias: "Zero Token Mac", platform: "mac" },
       appVersion: "0.5.5-test",
-      entries: [],
-      modelStats: [],
+      aggregationVersion: 2,
+      deviceStats: { entryCount: 0, tokens: 0 },
     },
   });
 
@@ -109,9 +185,12 @@ VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
       deviceId: "mac-device",
       device: { alias: "Mac", platform: "mac" },
       appVersion: "0.5.5-test",
-      modelStats: [
+      aggregationVersion: 2,
+      deviceStats: { entryCount: 1, tokens: 1234 },
+      usageBuckets: [
         {
-          date: utcToday,
+          id: "hour-v2-test-1",
+          startedAt: "2026-05-27T01:00:00.000Z",
           source: "codex-session",
           model: "private-model",
           tokens: 1234,
@@ -119,27 +198,8 @@ VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
           outputTokens: 200,
           cacheReadTokens: 34,
           cacheWriteTokens: 0,
+          eventCount: 1,
           prompt: "private prompt",
-          localPath: "/private/workspace/path",
-        },
-      ],
-      entries: [
-        {
-          id: "mac-event-1",
-          createdAt: "2026-05-27T01:00:00.000Z",
-          source: "codex-session",
-          tokens: 1234,
-          inputTokens: 1000,
-          outputTokens: 200,
-          cacheReadTokens: 34,
-          cacheWriteTokens: 0,
-          deviceId: "mac-device",
-          note: "PRIVATE NOTE",
-          agent: "codex-desktop",
-          provider: "private-provider",
-          model: "private-model",
-          prompt: "private prompt",
-          reply: "private reply",
           localPath: "/private/workspace/path",
         },
       ],
@@ -181,6 +241,12 @@ VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
     },
   });
 
+  const legacyProtocolTree = await requestJson("/api/tree?protocol=1");
+  assert(
+    legacyProtocolTree.entries?.some((entry) => entry.id === "mac-event-1-different-path-id"),
+    "protocol v1 clients should continue receiving raw events during the upgrade window",
+  );
+
   cloudTree = await requestJson("/api/tree");
   assert(cloudTree.summary?.hasRemoteTree === true, "cloud tree summary should report an existing tree");
   assert(cloudTree.summary?.entryCount === 1, "cloud tree should contain one event");
@@ -189,17 +255,15 @@ VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
   const [event] = cloudTree.entries ?? [];
   const [achievement] = cloudTree.achievements ?? [];
   const [device] = cloudTree.devices ?? [];
-  const [modelStat] = cloudTree.modelStats ?? [];
-  assert(event?.id === "mac-event-1", "cloud tree should return the uploaded event");
+  assert(event?.id === "cloud-bucket:mac-device:hour-v2-test-1", "cloud tree should return the uploaded aggregate bucket");
   assert(event.source === "codex-session", "worker should preserve safe source categories");
   assert(event.deviceId === "mac-device", "worker should preserve device id");
   assert(event.tokens === 1234, "worker should preserve token count");
+  assert(event.model === "private-model", "worker should preserve aggregate model labels");
   assertNoForbiddenKeys(event, "GET /api/tree event");
   assert(achievement?.id === "sprout", "cloud tree should return the uploaded achievement");
   assertNoForbiddenKeys(achievement, "GET /api/tree achievement");
   assert(device?.deviceId === "mac-device" && device.platform === "mac", "cloud tree should return device metadata");
-  assert(modelStat?.model === "private-model" && modelStat.tokens === 1234, "cloud tree should return aggregate model stats");
-  assert(!("prompt" in modelStat) && !("localPath" in modelStat), "cloud model stats should not leak raw session data");
   const fullTreeCursor = cloudTree.cursor;
   assert(typeof fullTreeCursor === "string" && Number.isFinite(Date.parse(fullTreeCursor)), "full cloud tree should return a sync cursor");
 
@@ -209,29 +273,20 @@ VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
     body: {
       deviceId: "mac-device",
       appVersion: "0.5.5-test",
-      modelStats: [
+      aggregationVersion: 2,
+      deviceStats: { entryCount: 2, tokens: 1334 },
+      usageBuckets: [
         {
-          date: utcToday,
-          source: "codex-session",
-          model: "private-model",
-          tokens: 1334,
-          inputTokens: 1100,
-          outputTokens: 200,
-          cacheReadTokens: 34,
-          cacheWriteTokens: 0,
-        },
-      ],
-      entries: [
-        {
-          id: "mac-event-2",
-          createdAt: "2026-05-27T02:00:00.000Z",
+          id: "hour-v2-test-2",
+          startedAt: "2026-05-27T02:00:00.000Z",
           source: "openclaw-session",
+          model: "openclaw-model",
           tokens: 100,
           inputTokens: 80,
           outputTokens: 20,
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
-          deviceId: "mac-device",
+          eventCount: 1,
         },
       ],
     },
@@ -251,16 +306,52 @@ VALUES ('${highLevelTokenHash}', 'user-high-level', '${now}', '${expiresAt}');
   const deltaTree = await requestJson(`/api/tree/delta?since=${encodeURIComponent(fullTreeCursor)}`);
   assert(deltaTree.delta === true, "delta cloud tree should mark the payload as a delta");
   assert(typeof deltaTree.cursor === "string" && deltaTree.cursor > fullTreeCursor, "delta cloud tree should advance the cursor");
-  assert(deltaTree.entries?.length === 1 && deltaTree.entries[0].id === "mac-event-2", "delta cloud tree should only return events changed after the cursor");
+  assert(deltaTree.entries?.length === 1 && deltaTree.entries[0].id === "cloud-bucket:mac-device:hour-v2-test-2", "delta cloud tree should only return aggregate buckets changed after the cursor");
   assert(deltaTree.achievements?.length === 1 && deltaTree.achievements[0].id === "branch", "delta cloud tree should only return achievements changed after the cursor");
   assert(deltaTree.devicesFull === true, "delta cloud tree should keep device snapshots backward-compatible");
   assert(deltaTree.modelStatsFull === false, "delta cloud tree should only include changed model aggregate snapshots");
   assert(deltaTree.devices?.find((item) => item.deviceId === "mac-device")?.tokens === 1334, "delta cloud tree should use cached per-device totals");
-  assert(deltaTree.modelStats?.find((item) => item.model === "private-model")?.tokens === 1334, "delta cloud tree should include the latest aggregate model totals");
   await assertRejects(
     () => requestJson("/api/tree/delta?since=not-a-date"),
     "delta cloud tree should reject invalid cursors",
   );
+
+  await delay(5);
+  await requestJson("/api/tree/events", {
+    method: "POST",
+    body: {
+      deviceId: "mac-device",
+      aggregationVersion: 2,
+      deletedUsageBucketIds: ["hour-v2-test-2"],
+      appVersion: "0.5.5-test",
+    },
+  });
+  const deletionDelta = await requestJson(`/api/tree/delta?since=${encodeURIComponent(deltaTree.cursor)}`);
+  assert(
+    deletionDelta.deletedEntryIds?.includes("cloud-bucket:mac-device:hour-v2-test-2"),
+    "delta cloud tree should propagate aggregate bucket deletions",
+  );
+  await delay(5);
+  await requestJson("/api/tree/events", {
+    method: "POST",
+    body: {
+      deviceId: "mac-device",
+      aggregationVersion: 2,
+      usageBuckets: [
+        {
+          id: "hour-v2-test-2",
+          startedAt: "2026-05-27T02:00:00.000Z",
+          source: "openclaw-session",
+          model: "openclaw-model",
+          tokens: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+          eventCount: 1,
+        },
+      ],
+      appVersion: "0.5.5-test",
+    },
+  });
 
   await requestJson("/api/usage/daily", {
     method: "POST",
@@ -876,7 +967,14 @@ async function waitForWorker() {
 }
 
 async function requestJson(path, options = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
+  const requestUrl = new URL(path, baseUrl);
+  if (
+    (requestUrl.pathname === "/api/tree" || requestUrl.pathname === "/api/tree/delta") &&
+    !requestUrl.searchParams.has("protocol")
+  ) {
+    requestUrl.searchParams.set("protocol", "2");
+  }
+  const response = await fetch(requestUrl, {
     method: options.method ?? "GET",
     headers: {
       Authorization: `Bearer ${options.token ?? token}`,
@@ -962,6 +1060,7 @@ function assertNoForbiddenKeys(value, label) {
     "trigger",
     "triggerJson",
   ]) {
+    if (key === "model" && typeof value?.id === "string" && value.id.startsWith("cloud-bucket:")) continue;
     assert(!(key in value), `${label} leaked forbidden key: ${key}`);
   }
 }

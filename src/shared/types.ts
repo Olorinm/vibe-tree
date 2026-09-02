@@ -14,6 +14,8 @@ export interface LedgerEntry {
   deviceId?: string;
   syncedFromCloud?: boolean;
   eventFingerprint?: string;
+  /** Number of local usage events represented by an aggregate cloud entry. */
+  eventCount?: number;
 }
 
 export type AppLanguage = "zh-CN" | "en-US";
@@ -75,6 +77,25 @@ export interface CloudModelStat {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+}
+
+export interface CloudUsageBucket {
+  id: string;
+  startedAt: string;
+  source: string;
+  model?: string;
+  tokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  eventCount: number;
+}
+
+export interface CloudUsageSnapshot {
+  buckets: CloudUsageBucket[];
+  entryCount: number;
+  tokens: number;
 }
 
 export type LeaderboardPreferencePeriod = "early" | "morning" | "afternoon" | "evening" | "night";
@@ -346,6 +367,8 @@ export interface LedgerFile {
   settings: Settings;
   installedAt: string;
 }
+
+export type RendererLedgerView = "pet" | "manager" | "toast" | "menubar";
 
 export interface AchievementUnlock {
   id: string;

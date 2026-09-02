@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const leaderboardModuleUrl = new URL("../dist/electron/leaderboard.js", import.meta.url);
 const tokenAccountingModuleUrl = new URL("../dist/shared/tokenAccounting.js", import.meta.url);
@@ -36,6 +37,7 @@ function clone(value) {
 
 function assertNoForbiddenKeys(value, label) {
   for (const key of forbiddenEventKeys) {
+    if (key === "model" && typeof value?.id === "string" && value.id.startsWith("cloud-bucket:")) continue;
     assert(!(key in value), `${label} leaked forbidden key: ${key}`);
   }
 }
@@ -45,6 +47,7 @@ function createFakeCloud() {
   const achievements = new Map();
   const devices = new Map();
   const modelStats = new Map();
+  const tombstones = new Map();
   const requests = [];
   let leaderboardDeleteCount = 0;
   let deltaUnsupported = false;
@@ -63,7 +66,7 @@ function createFakeCloud() {
     const device = devices.get(deviceId);
     if (!device) return;
     const deviceEvents = [...events.values()].filter((entry) => entry.deviceId === deviceId);
-    device.entryCount = deviceEvents.length;
+    device.entryCount = deviceEvents.reduce((total, entry) => total + (optionalCount(entry.eventCount) ?? 1), 0);
     device.tokens = deviceEvents.reduce((total, entry) => total + entry.tokens, 0);
   }
 
@@ -99,6 +102,7 @@ function createFakeCloud() {
       const unlocked = [...achievements.values()].sort((left, right) => left.unlockedAt.localeCompare(right.unlockedAt));
       return {
         entries,
+        deletedEntryIds: [],
         achievements: unlocked,
         devices: [...devices.values()],
         modelStats: [...modelStats.values()],
@@ -130,8 +134,12 @@ function createFakeCloud() {
       const changedModelStats = [...modelStats.values()]
         .filter((item) => rowTimestamp(item) > since && rowTimestamp(item) <= cursor)
         .sort((left, right) => rowTimestamp(left).localeCompare(rowTimestamp(right)));
+      const deletedEntryIds = [...tombstones.values()]
+        .filter((item) => item.updatedAt > since && item.updatedAt <= cursor)
+        .map((item) => item.id);
       return {
         entries,
+        deletedEntryIds,
         achievements: unlocked,
         devices: [...devices.values()],
         modelStats: changedModelStats,
@@ -189,6 +197,38 @@ function createFakeCloud() {
           });
         }
       }
+      if (Array.isArray(body?.usageBuckets)) {
+        for (const bucket of body.usageBuckets) {
+          const id = `cloud-bucket:${body.deviceId}:${bucket.id}`;
+          events.set(id, {
+            id,
+            createdAt: bucket.startedAt,
+            source: normalizeCloudSource(bucket.source, id),
+            model: bucket.model,
+            tokens: optionalCount(bucket.tokens) ?? 0,
+            inputTokens: optionalCount(bucket.inputTokens),
+            outputTokens: optionalCount(bucket.outputTokens),
+            cacheReadTokens: optionalCount(bucket.cacheReadTokens),
+            cacheWriteTokens: optionalCount(bucket.cacheWriteTokens),
+            eventCount: optionalCount(bucket.eventCount) ?? 1,
+            deviceId: body.deviceId,
+            updatedAt,
+          });
+          tombstones.delete(id);
+        }
+      }
+      if (Array.isArray(body?.deletedUsageBucketIds)) {
+        for (const bucketId of body.deletedUsageBucketIds) {
+          const id = `cloud-bucket:${body.deviceId}:${bucketId}`;
+          events.delete(id);
+          tombstones.set(id, { id, updatedAt });
+        }
+      }
+      if (body?.deviceStats) {
+        const device = devices.get(body.deviceId);
+        device.entryCount = optionalCount(body.deviceStats.entryCount) ?? device.entryCount;
+        device.tokens = optionalCount(body.deviceStats.tokens) ?? device.tokens;
+      }
       const entries = Array.isArray(body?.entries) ? body.entries : [];
       for (const entry of entries) {
         assertNoForbiddenKeys(entry, `uploaded event ${entry?.id ?? "unknown"}`);
@@ -206,8 +246,8 @@ function createFakeCloud() {
           eventFingerprint: entry.eventFingerprint,
         });
       }
-      updateDeviceTotals(body.deviceId);
-      return { ok: true, synced: entries.length };
+      if (!body?.deviceStats) updateDeviceTotals(body.deviceId);
+      return { ok: true, synced: entries.length, syncedUsageBuckets: body?.usageBuckets?.length ?? 0 };
     }
 
     if (url.pathname === "/api/tree/achievements" && method === "POST") {
@@ -245,6 +285,7 @@ function createFakeCloud() {
     achievements,
     devices,
     modelStats,
+    tombstones,
     requests,
     requestJson,
     insertRemoteEvent,
@@ -261,6 +302,57 @@ function optionalCount(value) {
   if (value === undefined || value === null) return undefined;
   const number = Math.round(Number(value));
   return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function cloudUsageSnapshot(entries, deviceId) {
+  const rows = new Map();
+  const seenFingerprints = new Set();
+  const remoteFingerprints = new Set(
+    entries
+      .filter((entry) => (entry.syncedFromCloud || entry.source === "cloud-sync") && entry.deviceId && entry.deviceId !== deviceId)
+      .map(mirrorDedupeKey)
+      .filter(Boolean),
+  );
+  let entryCount = 0;
+  let tokens = 0;
+  for (const entry of entries) {
+    if ((entry.syncedFromCloud || entry.source === "cloud-sync") && entry.deviceId && entry.deviceId !== deviceId) continue;
+    const fingerprint = mirrorDedupeKey(entry);
+    if (fingerprint && remoteFingerprints.has(fingerprint)) continue;
+    if (fingerprint && seenFingerprints.has(fingerprint)) continue;
+    if (fingerprint) seenFingerprints.add(fingerprint);
+    const createdAtMs = Date.parse(entry.createdAt);
+    if (!Number.isFinite(createdAtMs)) continue;
+    const source = normalizeCloudSource(entry.source, entry.id);
+    if (source === "cloud-sync") continue;
+    const bucketTokens = countedTokensForEntry(entry);
+    if (bucketTokens <= 0) continue;
+    const startedAt = new Date(Math.floor(createdAtMs / 3_600_000) * 3_600_000).toISOString();
+    const model = entry.model || entry.provider;
+    const identity = [startedAt, source, model || ""].join("\0");
+    const row = rows.get(identity) ?? {
+      id: `hour-v2-${createHash("sha256").update(identity).digest("hex").slice(0, 32)}`,
+      startedAt,
+      source,
+      model,
+      tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      eventCount: 0,
+    };
+    row.tokens += bucketTokens;
+    row.inputTokens += optionalCount(entry.inputTokens) ?? 0;
+    row.outputTokens += optionalCount(entry.outputTokens) ?? 0;
+    row.cacheReadTokens += optionalCount(entry.cacheReadTokens) ?? 0;
+    row.cacheWriteTokens += optionalCount(entry.cacheWriteTokens) ?? 0;
+    row.eventCount += optionalCount(entry.eventCount) ?? 1;
+    rows.set(identity, row);
+    tokens += bucketTokens;
+    entryCount += optionalCount(entry.eventCount) ?? 1;
+  }
+  return { buckets: [...rows.values()], entryCount, tokens };
 }
 
 function createDevice(
@@ -321,12 +413,15 @@ function createDevice(
           cacheWriteTokens: optionalCount(entry.cacheWriteTokens),
         }))
         .filter((stat) => stat.source !== "cloud-sync"),
+    cloudUsageSnapshot: () => cloudUsageSnapshot(ledger.entries, deviceId),
     getLedger: () => ledger,
     getAchievements: () => achievementState,
     updateSettings: (partial) => {
       ledger.settings = { ...ledger.settings, ...partial };
     },
-    appendRemoteEntries: (remoteEntries) => {
+    appendRemoteEntries: (remoteEntries, deletedEntryIds = []) => {
+      const deletedIds = new Set(deletedEntryIds);
+      ledger.entries = ledger.entries.filter((entry) => !deletedIds.has(entry.id));
       const existing = new Map(ledger.entries.map((entry) => [entry.id, entry]));
       const existingByMirrorKey = new Map();
       for (const entry of ledger.entries) {
@@ -506,7 +601,11 @@ function mergeDuplicate(preferred, secondary, fingerprint) {
     model: preferred.model ?? secondary.model,
     note: preferred.note ?? secondary.note,
     tokens: secondary.syncedFromCloud || secondary.source === "cloud-sync" ? secondary.tokens : preferred.tokens,
-    deviceId: preferred.deviceId ?? secondary.deviceId,
+    deviceId:
+      (secondary.syncedFromCloud || secondary.source === "cloud-sync" ? secondary.deviceId : undefined) ??
+      (preferred.syncedFromCloud || preferred.source === "cloud-sync" ? preferred.deviceId : undefined) ??
+      preferred.deviceId ??
+      secondary.deviceId,
     syncedFromCloud: preferred.syncedFromCloud || secondary.syncedFromCloud || secondary.source === "cloud-sync" || undefined,
     eventFingerprint: fingerprint,
   };
@@ -605,12 +704,12 @@ kimiDevice.ledger.settings.cloudSyncEnabled = true;
 kimiDevice.ledger.settings.treeStartMode = "new";
 status = await kimiDevice.service.syncCloudTree({ force: true });
 assert(!status.error, `Kimi cloud sync failed: ${status.error}`);
-assert(kimiCloud.events.get("kimi-session:usage-record")?.source === "kimi-session", "cloud sync should preserve the Kimi source category");
+assert([...kimiCloud.events.values()].some((row) => row.source === "kimi-session"), "cloud sync should preserve the Kimi source category");
 assert(
-  [...kimiCloud.modelStats.values()].some(
+  [...kimiCloud.events.values()].some(
     (row) => row.source === "kimi-session" && row.model === "mimo-v2.5-pro" && row.tokens === 1200,
   ),
-  "cloud sync should preserve Kimi aggregate model totals",
+  "cloud sync should preserve Kimi model totals inside the aggregate bucket",
 );
 kimiDevice.service.stop();
 
@@ -628,11 +727,11 @@ deepseekDevice.ledger.settings.treeStartMode = "new";
 status = await deepseekDevice.service.syncCloudTree({ force: true });
 assert(!status.error, `DeepSeek cloud sync failed: ${status.error}`);
 assert(
-  deepseekCloud.events.get("deepseek-session:usage-record")?.source === "deepseek-session",
+  [...deepseekCloud.events.values()].some((row) => row.source === "deepseek-session"),
   "cloud sync should preserve the DeepSeek Harness source category",
 );
 assert(
-  [...deepseekCloud.modelStats.values()].some(
+  [...deepseekCloud.events.values()].some(
     (row) => row.source === "deepseek-session" && row.model === "deepseek-chat" && row.tokens === 880,
   ),
   "cloud sync should preserve DeepSeek Harness aggregate model totals",
@@ -666,21 +765,21 @@ windows.ledger.settings.treeStartMode = "new";
 status = await windows.service.syncCloudTree({ force: true });
 assert(!status.error, `windows initial sync failed: ${status.error}`);
 assert(windows.files.get("windows:cloud")?.treeCursor, "initial cloud sync should persist a tree cursor");
-assert(cloud.events.size === 1, "windows initial sync should upload one event");
+assert(cloud.events.size === 2, "windows initial sync should upload two aggregate buckets");
 assert(cloud.achievements.size === 1, "windows initial sync should upload one achievement");
-assert(cloud.events.get("win-event-1").source === "codex-session", "cloud should preserve safe source categories");
+assert([...cloud.events.values()].every((row) => row.source === "codex-session"), "cloud should preserve safe source categories");
 assert(cloud.devices.get("win-device")?.platform === "windows", "cloud should track device platform metadata");
 assert(
-  [...cloud.modelStats.values()].some((row) => row.deviceId === "win-device" && row.model === "private-model"),
-  "cloud should store default aggregate model totals",
+  [...cloud.events.values()].some((row) => row.deviceId === "win-device" && row.model === "private-model"),
+  "cloud should store default model totals inside aggregate buckets",
 );
 assert(
-  [...cloud.modelStats.values()].some((row) => row.deviceId === "win-device" && row.model === "repaired-model"),
-  "cloud should include repaired same-device cloud mirrors in aggregate model totals",
+  [...cloud.events.values()].some((row) => row.deviceId === "win-device" && row.model === "repaired-model"),
+  "cloud should include repaired same-device cloud mirrors in aggregate buckets",
 );
 assert(
-  ![...cloud.modelStats.values()].some((row) => row.deviceId === "win-device" && row.model === "remote-model"),
-  "cloud should not let one device re-upload another device's aggregate model totals",
+  ![...cloud.events.values()].some((row) => row.deviceId === "win-device" && row.model === "remote-model"),
+  "cloud should not let one device re-upload another device's aggregate model buckets",
 );
 
 const modelStatsCacheCloud = createFakeCloud();
@@ -691,16 +790,16 @@ modelStatsCacheDevice.ledger.settings.cloudSyncEnabled = true;
 modelStatsCacheDevice.ledger.settings.treeStartMode = "new";
 status = await modelStatsCacheDevice.service.syncCloudTree({ force: true });
 assert(!status.error, `model stat cache seed sync failed: ${status.error}`);
-const modelStatUploadCountAfterSeed = modelStatsCacheCloud.requests.filter(
-  (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.modelStats),
+const bucketUploadCountAfterSeed = modelStatsCacheCloud.requests.filter(
+  (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.usageBuckets),
 ).length;
 status = await modelStatsCacheDevice.service.syncCloudTree();
 assert(!status.error, `model stat cache repeat sync failed: ${status.error}`);
 assert(
   modelStatsCacheCloud.requests.filter(
-    (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.modelStats),
-  ).length === modelStatUploadCountAfterSeed,
-  "repeat cloud sync should not resend unchanged aggregate model stats",
+    (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.usageBuckets),
+  ).length === bucketUploadCountAfterSeed,
+  "repeat cloud sync should not resend unchanged aggregate usage buckets",
 );
 modelStatsCacheDevice.ledger.entries.unshift(
   localEntry("model-cache-2", "model-cache-device", "codex-session", "2026-05-27T02:20:00.000Z", 100),
@@ -709,9 +808,9 @@ status = await modelStatsCacheDevice.service.syncCloudTree();
 assert(!status.error, `model stat cache changed sync failed: ${status.error}`);
 assert(
   modelStatsCacheCloud.requests.filter(
-    (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.modelStats),
-  ).length === modelStatUploadCountAfterSeed + 1,
-  "changed aggregate model stats should still upload on the next cloud sync",
+    (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.usageBuckets),
+  ).length === bucketUploadCountAfterSeed + 1,
+  "a changed aggregate usage bucket should upload on the next cloud sync",
 );
 modelStatsCacheDevice.service.stop();
 
@@ -741,28 +840,28 @@ legacyModelDevice.ledger.settings.treeStartMode = "cloud";
 status = await legacyModelDevice.service.syncCloudTree({ force: true });
 assert(!status.error, `legacy no-device model sync failed: ${status.error}`);
 assert(
-  [...legacyModelCloud.modelStats.values()].some(
+  [...legacyModelCloud.events.values()].some(
     (row) => row.deviceId === "legacy-device" && row.source === "codex-session" && row.model === "legacy-model",
   ),
-  "same-device cloud mirrors without a device id should still repair aggregate model totals",
+  "same-device cloud mirrors without a device id should still repair aggregate model buckets",
 );
 legacyModelDevice.service.stop();
 
 const mac = createDevice("mac", "mac-device", cloud);
 status = await mac.service.joinCloudTree();
 assert(!status.error, `mac join existing failed: ${status.error}`);
-assert(mac.ledger.entries.length === 1, "mac should pull the windows event");
-assert(mac.ledger.entries[0].source === "codex-session", "mac should preserve pulled event source");
-assert(mac.ledger.entries[0].syncedFromCloud === true, "mac should mark pulled events as cloud-synced");
-assert(mac.ledger.entries[0].deviceId === "win-device", "mac should preserve remote device id");
+assert(mac.ledger.entries.length === 2, "mac should pull the windows aggregate buckets");
+assert(mac.ledger.entries.every((entry) => entry.source === "codex-session"), "mac should preserve pulled event sources");
+assert(mac.ledger.entries.every((entry) => entry.syncedFromCloud === true), "mac should mark pulled buckets as cloud-synced");
+assert(mac.ledger.entries.every((entry) => entry.deviceId === "win-device"), "mac should preserve remote device ids");
 assert(mac.achievements.unlocked.some((item) => item.id === "sprout"), "mac should merge remote achievement");
-assert(mac.service.cloudStatus().modelStats?.some((row) => row.model === "private-model"), "mac should cache remote aggregate model stats");
+assert(mac.ledger.entries.some((row) => row.model === "private-model"), "mac should retain remote model totals on aggregate buckets");
 
 const eventPostCountAfterJoin = cloud.requests.filter((request) => request.path === "/api/tree/events").length;
 mac.ledger.entries.unshift(localEntry("win-event-1-different-local-id", "mac-device", "codex-session", "2026-05-27T01:00:00.000Z", 1000));
 status = await mac.service.syncCloudTree({ force: true });
 assert(!status.error, `mac duplicate-history sync failed: ${status.error}`);
-assert(cloud.events.size === 1, "mac should not upload same historical event with a different local id");
+assert(cloud.events.size === 2, `mac should not upload same historical event with a different local id (${[...cloud.events.values()].map((row) => `${row.deviceId}:${row.source}:${row.createdAt}:${row.tokens}`).join(",")})`);
 
 mac.ledger.entries.unshift(localEntry("mac-event-1", "mac-device", "claude-session", "2026-05-27T02:00:00.000Z", 2000));
 mac.achievements.unlocked.push({
@@ -772,15 +871,15 @@ mac.achievements.unlocked.push({
 });
 status = await mac.service.syncCloudTree({ force: true });
 assert(!status.error, `mac force sync failed: ${status.error}`);
-assert(cloud.events.size === 2, "mac sync should add exactly one new event");
+assert(cloud.events.size === 3, `mac sync should add exactly one new aggregate bucket (${[...cloud.events.values()].map((row) => `${row.deviceId}:${row.source}:${row.createdAt}:${row.tokens}`).join(",")})`);
 assert(cloud.achievements.has("mac-growth"), "mac sync should upload new achievement");
 
 const macEventUploads = cloud.requests
   .slice(eventPostCountAfterJoin)
   .filter((request) => request.path === "/api/tree/events")
-  .flatMap((request) => request.body.entries);
-assert(macEventUploads.some((entry) => entry.id === "mac-event-1"), "mac sync should upload the mac local event");
-assert(!macEventUploads.some((entry) => entry.id === "win-event-1"), "mac sync should not re-upload pulled cloud events");
+  .flatMap((request) => request.body.usageBuckets ?? []);
+assert(macEventUploads.some((entry) => entry.source === "claude-session" && entry.tokens === 2000), "mac sync should upload the mac aggregate bucket");
+assert(!macEventUploads.some((entry) => entry.model === "repaired-model"), "mac sync should not re-upload pulled cloud buckets");
 
 const deltaRequestsBeforeWindowsPull = cloud.requests.filter((request) => request.path === "/api/tree/delta").length;
 status = await windows.service.syncCloudTree();
@@ -794,8 +893,8 @@ assert(
   "delta sync should only append the newly remote event, not re-download the full tree",
 );
 assert(
-  windows.ledger.entries.some((entry) => entry.id === "mac-event-1" && entry.source === "claude-session" && entry.syncedFromCloud),
-  "windows should pull mac event with its safe source category",
+  windows.ledger.entries.some((entry) => entry.deviceId === "mac-device" && entry.source === "claude-session" && entry.syncedFromCloud),
+  "windows should pull the mac aggregate bucket with its safe source category",
 );
 assert(windows.achievements.unlocked.some((item) => item.id === "mac-growth"), "windows should pull mac achievement");
 
@@ -805,6 +904,21 @@ assert(!status.error, `repeat sync failed: ${status.error}`);
 const afterRepeatIds = windows.ledger.entries.map((entry) => entry.id).sort().join(",");
 assert(afterRepeatIds === beforeRepeatIds, "repeat sync should not duplicate entries");
 
+const macCloudBucketId = [...cloud.events.values()].find((entry) => entry.deviceId === "mac-device")?.id;
+assert(macCloudBucketId, "mac aggregate bucket should exist before deletion sync");
+mac.ledger.entries = mac.ledger.entries.filter(
+  (entry) => !(entry.deviceId === "mac-device" && entry.source === "claude-session"),
+);
+status = await mac.service.syncCloudTree();
+assert(!status.error, `mac bucket deletion sync failed: ${status.error}`);
+assert(cloud.tombstones.has(macCloudBucketId), "deleting local history should create a remote aggregate tombstone");
+status = await windows.service.syncCloudTree();
+assert(!status.error, `windows tombstone pull failed: ${status.error}`);
+assert(
+  !windows.ledger.entries.some((entry) => entry.id === macCloudBucketId),
+  "a remote aggregate tombstone should remove the deleted bucket on another device",
+);
+
 windows.ledger.settings.leaderboardEnabled = true;
 windows.ledger.settings.cloudSyncEnabled = true;
 status = await windows.service.logout();
@@ -812,7 +926,7 @@ assert(!status.joined, "leaving leaderboard should disable leaderboard membershi
 assert(status.authenticated, "leaving leaderboard should keep GitHub auth for cloud sync");
 assert(windows.ledger.settings.cloudSyncEnabled === true, "leaving leaderboard should keep cloud sync enabled");
 assert(cloud.leaderboardDeleteCount === 1, "leaving leaderboard should call the leaderboard-only delete endpoint");
-assert(cloud.events.size === 2, "leaving leaderboard must not delete cloud tree events");
+assert(cloud.events.size === 2, "leaving leaderboard must not delete remaining cloud tree buckets");
 assert(cloud.achievements.size === 2, "leaving leaderboard must not delete cloud tree achievements");
 
 const fallbackCloud = createFakeCloud();
@@ -954,5 +1068,5 @@ assert(status.lastSyncedAt, "joining the leaderboard should wait for the first d
 leaderboardDevice.service.stop();
 
 console.log(
-  "Cloud sync contract verified: auth cancellation, two-device merge, delta sync and full fallback, aggregate model-stat cache, zero-token cloud tree join, dedupe, authoritative cloud tokens, empty-account guard, hourly leaderboard upload, leaderboard leave safety, and privacy payload whitelist passed.",
+  "Cloud sync contract verified: auth cancellation, two-device merge, delta/full pagination fallback, aggregate bucket caching/deletion, zero-token cloud tree join, dedupe, authoritative cloud tokens, empty-account guard, hourly leaderboard upload, leaderboard leave safety, and privacy payload whitelist passed.",
 );

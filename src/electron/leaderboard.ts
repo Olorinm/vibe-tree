@@ -6,6 +6,8 @@ import type {
   AchievementUnlock,
   CloudDeviceSummary,
   CloudModelStat,
+  CloudUsageBucket,
+  CloudUsageSnapshot,
   CloudSyncStatus,
   CreateSocialFriendInput,
   CreateSocialGroupFriendInviteInput,
@@ -52,23 +54,24 @@ interface LeaderboardAuthSessionResponse {
 }
 
 interface CloudSyncFile {
-  syncedEntryIds?: string[];
-  syncedEventFingerprints?: string[];
+  syncProtocol?: number;
+  usageBucketSignatures?: Record<string, string>;
   syncedAchievementIds?: string[];
   lastUploadedCount?: number;
   lastDownloadedCount?: number;
   devices?: CloudDeviceSummary[];
   modelStats?: CloudModelStat[];
-  modelStatsSignature?: string;
   treeCursor?: string;
 }
 
 interface CloudTreeResponse {
   entries?: unknown[];
+  deletedEntryIds?: unknown[];
   achievements?: unknown[];
   devices?: unknown[];
   modelStats?: unknown[];
   cursor?: unknown;
+  nextPage?: unknown;
   delta?: boolean;
   modelStatsFull?: boolean;
   devicesFull?: boolean;
@@ -107,10 +110,11 @@ interface LeaderboardServiceOptions {
   deviceId: () => string;
   deviceInfo: () => CloudDeviceInfo;
   cloudModelStats: () => CloudModelStat[];
+  cloudUsageSnapshot: () => CloudUsageSnapshot;
   getLedger: () => LedgerFile;
   getAchievements: () => AchievementState;
   updateSettings: (partial: Partial<Settings>) => void;
-  appendRemoteEntries: (entries: LedgerEntry[]) => number;
+  appendRemoteEntries: (entries: LedgerEntry[], deletedEntryIds?: string[]) => number;
   mergeRemoteAchievements: (unlocked: AchievementUnlock[]) => number;
   xpForEntry: (entry: LedgerEntry) => number;
   dateKey: (date: Date) => string;
@@ -132,6 +136,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
   let auth: LeaderboardAuthFile = {};
   let syncTimer: ReturnType<typeof setTimeout> | null = null;
   let cloudSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  let cloudSyncTimerDueAt: number | undefined;
   let syncing = false;
   let cloudSyncing = false;
   let lastCloudUploadedCount = 0;
@@ -139,6 +144,10 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
   let authServer: http.Server | null = null;
   let cancelPendingAuth: ((message?: string) => boolean) | null = null;
   let lastSyncAttemptAt: string | undefined;
+  let cloudSyncFailureCount = 0;
+
+  const CLOUD_CHANGE_SYNC_DELAY_MS = 60_000;
+  const CLOUD_BUCKET_UPLOAD_SIZE = 200;
 
   const configured = Boolean(options.apiUrl);
   const ledger = () => options.getLedger();
@@ -191,6 +200,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
     syncTimer = null;
     cloudSyncTimer = null;
+    cloudSyncTimerDueAt = undefined;
     cancelPendingAuth?.(text("leaderboardLoginCancelled"));
     authServer?.close();
     authServer = null;
@@ -217,16 +227,17 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     }, nextSyncDelay());
   }
 
-  function scheduleCloudSyncSoon(delayMs = 3_000) {
-    if (cloudSyncTimer) {
-      clearTimeout(cloudSyncTimer);
-      cloudSyncTimer = null;
-    }
+  function scheduleCloudSyncSoon(delayMs = CLOUD_CHANGE_SYNC_DELAY_MS) {
     if (!configured || !auth.token || !ledger().settings.cloudSyncEnabled || !ledger().settings.cloudSyncAutoSyncEnabled) return;
+    const dueAt = Date.now() + Math.max(0, delayMs);
+    if (cloudSyncTimer && cloudSyncTimerDueAt !== undefined && cloudSyncTimerDueAt <= dueAt) return;
+    if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
+    cloudSyncTimerDueAt = dueAt;
     cloudSyncTimer = setTimeout(() => {
       cloudSyncTimer = null;
+      cloudSyncTimerDueAt = undefined;
       void syncCloudTree();
-    }, delayMs);
+    }, Math.max(0, dueAt - Date.now()));
   }
 
   function cloudStatus(error?: string): CloudSyncStatus {
@@ -237,7 +248,13 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       authenticated,
       enabled: Boolean(ledger().settings.cloudSyncEnabled && authenticated),
       syncing: cloudSyncing,
-      hasRemoteTree: state.syncedEntryIds?.length || state.syncedAchievementIds?.length ? true : undefined,
+      hasRemoteTree:
+        Object.keys(state.usageBucketSignatures ?? {}).length ||
+        state.syncedAchievementIds?.length ||
+        state.devices?.length ||
+        state.modelStats?.length
+          ? true
+          : undefined,
       deviceId: ledger().settings.cloudSyncDeviceId,
       profile: authenticated ? auth.profile : ledger().settings.leaderboardProfile,
       lastSyncedAt: ledger().settings.cloudSyncLastSyncedAt,
@@ -439,33 +456,50 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         state = mergeCloudState(state, pulled.entries, pulled.achievements, pulled.devices, pulled.modelStats, pulled.cursor);
       }
 
-      const modelStatsSignature = await syncCloudDeviceSnapshot(state, syncOptions.force === true);
-      state = { ...state, modelStatsSignature };
+      const snapshot = options.cloudUsageSnapshot();
+      await syncCloudDeviceSnapshot(snapshot, state.syncProtocol !== 2);
+      const previousBucketSignatures = state.syncProtocol === 2 ? { ...(state.usageBucketSignatures ?? {}) } : {};
+      const currentBucketSignatures = Object.fromEntries(
+        snapshot.buckets.map((bucket) => [bucket.id, cloudUsageBucketSignature(bucket)]),
+      );
+      const changedBuckets = snapshot.buckets.filter(
+        (bucket) => syncOptions.force === true || previousBucketSignatures[bucket.id] !== currentBucketSignatures[bucket.id],
+      );
+      const deletedBucketIds = Object.keys(previousBucketSignatures).filter((id) => !(id in currentBucketSignatures));
 
-      const syncedEntryIds = new Set(syncOptions.force && !syncOptions.pullFirst ? [] : state.syncedEntryIds ?? []);
-      const syncedEventFingerprints = new Set(state.syncedEventFingerprints ?? []);
-      const localEntries = ledger().entries.filter((entry) => {
-        if (isCloudSyncedEntry(entry) || syncedEntryIds.has(entry.id)) return false;
-        const fingerprint = cloudEventFingerprint(entry);
-        return !fingerprint || !syncedEventFingerprints.has(fingerprint);
-      });
-      for (const chunk of chunkArray(localEntries, 500)) {
+      for (const chunk of chunkArray(changedBuckets, CLOUD_BUCKET_UPLOAD_SIZE)) {
         if (!chunk.length) continue;
         await requestJson(apiUrl("/api/tree/events"), {
           method: "POST",
           token: auth.token,
           body: {
             deviceId: options.deviceId(),
-            entries: chunk.map((entry) => cloudEntry(entry, options.deviceId())),
+            aggregationVersion: 2,
+            usageBuckets: chunk,
             appVersion: options.currentAppVersion(),
           },
         });
-        uploadedCount += chunk.length;
-        for (const entry of chunk) {
-          syncedEntryIds.add(entry.id);
-          const fingerprint = cloudEventFingerprint(entry);
-          if (fingerprint) syncedEventFingerprints.add(fingerprint);
-        }
+        uploadedCount += chunk.reduce((total, bucket) => total + bucket.eventCount, 0);
+        for (const bucket of chunk) previousBucketSignatures[bucket.id] = currentBucketSignatures[bucket.id];
+        state = checkpointCloudBucketState(state, previousBucketSignatures);
+        writeCloudSyncState(state);
+      }
+
+      for (const chunk of chunkArray(deletedBucketIds, CLOUD_BUCKET_UPLOAD_SIZE)) {
+        if (!chunk.length) continue;
+        await requestJson(apiUrl("/api/tree/events"), {
+          method: "POST",
+          token: auth.token,
+          body: {
+            deviceId: options.deviceId(),
+            aggregationVersion: 2,
+            deletedUsageBucketIds: chunk,
+            appVersion: options.currentAppVersion(),
+          },
+        });
+        for (const id of chunk) delete previousBucketSignatures[id];
+        state = checkpointCloudBucketState(state, previousBucketSignatures);
+        writeCloudSyncState(state);
       }
 
       const syncedAchievementIds = new Set(syncOptions.force ? [] : state.syncedAchievementIds ?? []);
@@ -480,6 +514,8 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
           },
         });
         for (const achievement of localAchievements) syncedAchievementIds.add(achievement.id);
+        state = { ...state, syncedAchievementIds: [...syncedAchievementIds] };
+        writeCloudSyncState(state);
       }
 
       const pulled = await pullCloudTree({ state });
@@ -487,8 +523,8 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       state = mergeCloudState(
         {
           ...state,
-          syncedEntryIds: [...syncedEntryIds],
-          syncedEventFingerprints: [...syncedEventFingerprints],
+          syncProtocol: 2,
+          usageBucketSignatures: previousBucketSignatures,
           syncedAchievementIds: [...syncedAchievementIds],
         },
         pulled.entries,
@@ -511,12 +547,14 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         cloudSyncLastSyncedAt: now().toISOString(),
         cloudSyncLastPulledAt: now().toISOString(),
       });
+      cloudSyncFailureCount = 0;
       cloudSyncing = false;
       scheduleCloudSyncSoon(nextCloudSyncDelay());
       return cloudStatus();
     } catch (error) {
       cloudSyncing = false;
-      if (!syncOptions.requireRemote) scheduleCloudSyncSoon(30_000);
+      cloudSyncFailureCount += 1;
+      if (!syncOptions.requireRemote) scheduleCloudSyncSoon(cloudSyncRetryDelay(error, cloudSyncFailureCount));
       return cloudStatus(error instanceof Error ? error.message : text("leaderboardSyncFailed"));
     }
   }
@@ -935,32 +973,78 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
 
   async function pullCloudTree({ state }: { state: CloudSyncFile }) {
     const cursor = normalizeTreeCursor(state.treeCursor);
-    let data: CloudTreeResponse;
-    if (cursor) {
-      const deltaUrl = new URL(apiUrl("/api/tree/delta"));
-      deltaUrl.searchParams.set("since", cursor);
+    let useDelta = Boolean(cursor);
+    let baseUrl = new URL(apiUrl(useDelta ? "/api/tree/delta" : "/api/tree"));
+    baseUrl.searchParams.set("protocol", "2");
+    if (useDelta && cursor) baseUrl.searchParams.set("since", cursor);
+    const pages: CloudTreeResponse[] = [];
+    const seenPages = new Set<string>();
+    let nextPage: string | undefined;
+
+    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+      const pageUrl = new URL(baseUrl);
+      if (nextPage) pageUrl.searchParams.set("page", nextPage);
+      let page: CloudTreeResponse;
       try {
-        data = await requestJson<CloudTreeResponse>(deltaUrl.toString(), { token: auth.token });
+        page = await requestJson<CloudTreeResponse>(pageUrl.toString(), { token: auth.token });
       } catch (error) {
-        if (!isDeltaUnsupportedError(error)) throw error;
-        data = await requestJson<CloudTreeResponse>(apiUrl("/api/tree"), { token: auth.token });
+        if (!pages.length && useDelta && isDeltaUnsupportedError(error)) {
+          useDelta = false;
+          baseUrl = new URL(apiUrl("/api/tree"));
+          baseUrl.searchParams.set("protocol", "2");
+          nextPage = undefined;
+          pageIndex = -1;
+          continue;
+        }
+        throw error;
       }
-    } else {
-      data = await requestJson<CloudTreeResponse>(apiUrl("/api/tree"), { token: auth.token });
+      pages.push(page);
+      nextPage = cleanOptionalString(page.nextPage, 2_048);
+      if (!nextPage) break;
+      if (seenPages.has(nextPage)) throw new Error("Cloud tree pagination repeated the same cursor.");
+      seenPages.add(nextPage);
     }
-    const entries = normalizeCloudEntries(data.entries ?? []);
-    const achievements = normalizeCloudAchievements(data.achievements ?? []);
-    const devices = data.devicesFull === false
-      ? mergeCloudDevices(state.devices ?? [], normalizeCloudDevices(data.devices ?? []))
-      : normalizeCloudDevices(data.devices ?? []);
-    const modelStats = data.modelStatsFull === false
-      ? mergeCloudModelStats(state.modelStats ?? [], normalizeCloudModelStats(data.modelStats ?? []))
-      : normalizeCloudModelStats(data.modelStats ?? []);
-    const downloaded = options.appendRemoteEntries(entries);
+    if (nextPage) throw new Error("Cloud tree pagination exceeded the safety limit.");
+
+    const entries = normalizeCloudEntries(pages.flatMap((page) => page.entries ?? [])).filter(
+      (entry) => !entry.deviceId || entry.deviceId !== options.deviceId(),
+    );
+    const achievementMap = new Map(
+      normalizeCloudAchievements(pages.flatMap((page) => page.achievements ?? [])).map((item) => [item.id, item]),
+    );
+    const achievements = [...achievementMap.values()];
+    const receivedDevices = pages.reduce(
+      (all, page) => mergeCloudDevices(all, normalizeCloudDevices(page.devices ?? [])),
+      [] as CloudDeviceSummary[],
+    );
+    const receivedModelStats = mergeCloudModelStats(
+      [],
+      normalizeCloudModelStats(pages.flatMap((page) => page.modelStats ?? [])),
+    );
+    const isDeviceDelta = pages.some((page) => page.devicesFull === false);
+    const isModelStatsDelta = pages.some((page) => page.modelStatsFull === false);
+    const devices = isDeviceDelta ? mergeCloudDevices(state.devices ?? [], receivedDevices) : receivedDevices;
+    const modelStats = isModelStatsDelta
+      ? mergeCloudModelStats(state.modelStats ?? [], receivedModelStats)
+      : receivedModelStats;
+    const deletedEntryIds = [
+      ...new Set(
+        pages
+          .flatMap((page) => page.deletedEntryIds ?? [])
+          .map((value) => cleanOptionalString(value, 360))
+          .filter((value): value is string => Boolean(value?.startsWith("cloud-bucket:"))),
+      ),
+    ];
+    const downloaded = options.appendRemoteEntries(entries, deletedEntryIds);
     options.mergeRemoteAchievements(achievements);
     const hasRemoteTree = Boolean(
-      data.summary?.hasRemoteTree ?? (entries.length > 0 || achievements.length > 0 || devices.length > 0 || modelStats.length > 0),
+      pages.some((page) => page.summary?.hasRemoteTree) ||
+        entries.length > 0 || achievements.length > 0 || devices.length > 0 || modelStats.length > 0,
     );
+    const responseCursor = [...pages]
+      .reverse()
+      .map((page) => normalizeTreeCursor(page.cursor))
+      .find((value): value is string => Boolean(value));
     return {
       entries,
       achievements,
@@ -968,38 +1052,34 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       modelStats,
       downloaded,
       hasRemoteTree,
-      cursor: normalizeTreeCursor(data.cursor) ?? cursor,
-      delta: data.delta === true,
+      cursor: responseCursor ?? cursor,
+      delta: useDelta,
     };
   }
 
-  async function syncCloudDeviceSnapshot(state: CloudSyncFile, forceModelStats: boolean) {
-    const modelStats = options.cloudModelStats();
-    const modelStatsSignature = cloudModelStatsSignature(modelStats);
-    const shouldSendModelStats = forceModelStats || state.modelStatsSignature !== modelStatsSignature;
+  async function syncCloudDeviceSnapshot(snapshot: CloudUsageSnapshot, replaceLegacyUsageBuckets: boolean) {
     await requestJson(apiUrl("/api/tree/events"), {
       method: "POST",
       token: auth.token,
       body: {
         deviceId: options.deviceId(),
         device: options.deviceInfo(),
-        entries: [],
-        ...(shouldSendModelStats ? { modelStats } : {}),
+        aggregationVersion: 2,
+        replaceLegacyUsageBuckets,
+        deviceStats: {
+          entryCount: snapshot.entryCount,
+          tokens: snapshot.tokens,
+        },
         appVersion: options.currentAppVersion(),
       },
     });
-    return modelStatsSignature;
   }
 
   function readCloudSyncState(): CloudSyncFile {
     const state = options.readJsonFile<CloudSyncFile>(options.cloudSyncPath());
     return {
-      syncedEntryIds: Array.isArray(state?.syncedEntryIds)
-        ? state.syncedEntryIds.filter((id): id is string => typeof id === "string")
-        : [],
-      syncedEventFingerprints: Array.isArray(state?.syncedEventFingerprints)
-        ? state.syncedEventFingerprints.filter((id): id is string => typeof id === "string")
-        : [],
+      syncProtocol: state?.syncProtocol === 2 ? 2 : undefined,
+      usageBucketSignatures: normalizeBucketSignatures(state?.usageBucketSignatures),
       syncedAchievementIds: Array.isArray(state?.syncedAchievementIds)
         ? state.syncedAchievementIds.filter((id): id is string => typeof id === "string")
         : [],
@@ -1007,27 +1087,19 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       lastDownloadedCount: positiveInteger(state?.lastDownloadedCount),
       devices: normalizeCloudDevices(state?.devices ?? []),
       modelStats: normalizeCloudModelStats(state?.modelStats ?? []),
-      modelStatsSignature:
-        typeof state?.modelStatsSignature === "string" && state.modelStatsSignature.trim()
-          ? state.modelStatsSignature.trim()
-          : undefined,
       treeCursor: normalizeTreeCursor(state?.treeCursor),
     };
   }
 
   function writeCloudSyncState(state: CloudSyncFile) {
     options.writeJsonAtomic(options.cloudSyncPath(), {
-      syncedEntryIds: [...new Set(state.syncedEntryIds ?? [])],
-      syncedEventFingerprints: [...new Set(state.syncedEventFingerprints ?? [])],
+      syncProtocol: state.syncProtocol === 2 ? 2 : undefined,
+      usageBucketSignatures: normalizeBucketSignatures(state.usageBucketSignatures),
       syncedAchievementIds: [...new Set(state.syncedAchievementIds ?? [])],
       lastUploadedCount: positiveInteger(state.lastUploadedCount) ?? 0,
       lastDownloadedCount: positiveInteger(state.lastDownloadedCount) ?? 0,
       devices: normalizeCloudDevices(state.devices ?? []),
       modelStats: normalizeCloudModelStats(state.modelStats ?? []),
-      modelStatsSignature:
-        typeof state.modelStatsSignature === "string" && state.modelStatsSignature.trim()
-          ? state.modelStatsSignature.trim()
-          : undefined,
       treeCursor: normalizeTreeCursor(state.treeCursor),
     });
   }
@@ -1042,15 +1114,6 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
   ) {
     return {
       ...state,
-      syncedEntryIds: [
-        ...new Set([...(state.syncedEntryIds ?? []), ...entries.map((entry) => entry.id)]),
-      ],
-      syncedEventFingerprints: [
-        ...new Set([
-          ...(state.syncedEventFingerprints ?? []),
-          ...entries.map(cloudEventFingerprint).filter((value): value is string => Boolean(value)),
-        ]),
-      ],
       syncedAchievementIds: [
         ...new Set([...(state.syncedAchievementIds ?? []), ...achievements.map((item) => item.id)]),
       ],
@@ -1306,6 +1369,41 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     }
     for (const stat of options.cloudModelStats()) mergePreferenceModelStat(rows, stat);
 
+    // Protocol v2 carries the model on each hourly aggregate instead of
+    // maintaining a second model-stat table. Rebuild the same daily rows in
+    // memory so favorite-model preferences remain identical across devices.
+    const remoteRows = new Map<string, CloudModelStat>();
+    const currentDeviceId = options.deviceId();
+    for (const entry of ledger().entries) {
+      if (!entry.syncedFromCloud && entry.source !== "cloud-sync") continue;
+      if (!entry.deviceId || entry.deviceId === currentDeviceId) continue;
+      const model = cleanPreferenceLabel(entry.model);
+      const createdAt = new Date(entry.createdAt);
+      const tokens = options.xpForEntry(entry);
+      if (!model || !Number.isFinite(createdAt.getTime()) || tokens <= 0) continue;
+      const source = normalizeCloudEventSource(entry.source, entry.id);
+      const date = options.dateKey(createdAt);
+      const key = `${entry.deviceId}|${date}|${source}|${model}`;
+      const existing = remoteRows.get(key) ?? {
+        deviceId: entry.deviceId,
+        date,
+        source,
+        model,
+        tokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+      existing.tokens += tokens;
+      existing.inputTokens = (existing.inputTokens ?? 0) + (positiveInteger(entry.inputTokens) ?? 0);
+      existing.outputTokens = (existing.outputTokens ?? 0) + (positiveInteger(entry.outputTokens) ?? 0);
+      existing.cacheReadTokens = (existing.cacheReadTokens ?? 0) + (positiveInteger(entry.cacheReadTokens) ?? 0);
+      existing.cacheWriteTokens = (existing.cacheWriteTokens ?? 0) + (positiveInteger(entry.cacheWriteTokens) ?? 0);
+      remoteRows.set(key, existing);
+    }
+    for (const stat of remoteRows.values()) mergePreferenceModelStat(rows, stat);
+
     const totals = new Map<string, number>();
     for (const stat of rows.values()) {
       if (!modelStatInPreferenceRange(stat, start)) continue;
@@ -1501,16 +1599,19 @@ function normalizeCloudEntries(values: unknown[]) {
     const input = value as Partial<LedgerEntry> | undefined;
     if (!input || typeof input.id !== "string" || typeof input.createdAt !== "string") continue;
     if (!Number.isFinite(Date.parse(input.createdAt))) continue;
+    const model = cleanOptionalString(input.model, 64);
     entries.push({
       id: input.id,
       createdAt: input.createdAt,
       source: normalizeCloudEventSource(input.source, input.id),
+      ...(model ? { model } : {}),
       tokens: optionalCount(input.tokens) ?? 0,
       inputTokens: optionalCount(input.inputTokens),
       outputTokens: optionalCount(input.outputTokens),
       cacheReadTokens: optionalCount(input.cacheReadTokens),
       cacheWriteTokens: optionalCount(input.cacheWriteTokens),
       deviceId: cleanOptionalString(input.deviceId, 80),
+      eventCount: positiveInteger(input.eventCount) ?? 1,
       syncedFromCloud: true,
       eventFingerprint:
         cleanOptionalString(input.eventFingerprint, 240) ??
@@ -1593,21 +1694,52 @@ function cloudModelStatKey(stat: CloudModelStat) {
   return [stat.deviceId, stat.date, stat.source, stat.model].join("|");
 }
 
-function cloudModelStatsSignature(stats: CloudModelStat[]) {
-  const normalized = normalizeCloudModelStats(stats)
-    .sort((left, right) => cloudModelStatKey(left).localeCompare(cloudModelStatKey(right)))
-    .map((stat) => ({
-      deviceId: stat.deviceId,
-      date: stat.date,
-      source: stat.source,
-      model: stat.model,
-      tokens: stat.tokens,
-      inputTokens: stat.inputTokens ?? 0,
-      outputTokens: stat.outputTokens ?? 0,
-      cacheReadTokens: stat.cacheReadTokens ?? 0,
-      cacheWriteTokens: stat.cacheWriteTokens ?? 0,
-    }));
-  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+function cloudUsageBucketSignature(bucket: CloudUsageBucket) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        bucket.startedAt,
+        bucket.source,
+        bucket.model ?? "",
+        bucket.tokens,
+        bucket.inputTokens ?? 0,
+        bucket.outputTokens ?? 0,
+        bucket.cacheReadTokens ?? 0,
+        bucket.cacheWriteTokens ?? 0,
+        bucket.eventCount,
+      ]),
+    )
+    .digest("hex");
+}
+
+function normalizeBucketSignatures(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const signatures: Record<string, string> = {};
+  for (const [id, signature] of Object.entries(value as Record<string, unknown>).slice(0, 20_000)) {
+    if (!/^hour-v2-[a-f0-9]{32}$/.test(id)) continue;
+    if (typeof signature !== "string" || !/^[a-f0-9]{64}$/.test(signature)) continue;
+    signatures[id] = signature;
+  }
+  return signatures;
+}
+
+function checkpointCloudBucketState(state: CloudSyncFile, signatures: Record<string, string>): CloudSyncFile {
+  return {
+    ...state,
+    syncProtocol: 2,
+    usageBucketSignatures: { ...signatures },
+  };
+}
+
+function cloudSyncRetryDelay(error: unknown, failureCount: number) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/D1.*(daily row|limit)|free tier daily/i.test(message)) {
+    const nextReset = new Date();
+    nextReset.setUTCHours(24, 5, 0, 0);
+    return Math.max(60_000, nextReset.getTime() - Date.now());
+  }
+  const retrySteps = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+  return retrySteps[Math.min(Math.max(0, failureCount - 1), retrySteps.length - 1)];
 }
 
 function normalizeTreeCursor(value: unknown) {

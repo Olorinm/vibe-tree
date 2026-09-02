@@ -36,6 +36,7 @@ const LEGACY_DAILY_FALLBACK_HOURS = 26;
 const LEADERBOARD_CACHE_TTL_MS = 60_000;
 const SYNC_COOLDOWN_SECONDS = 30;
 const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
+const CLOUD_TREE_PAGE_SIZE = 1_000;
 const LEADERBOARD_RANGES: LeaderboardRange[] = ["24h", "7d", "30d", "all"];
 const leaderboardCache = new Map<LeaderboardRange, { expiresAt: number; updatedAt: string; entries: LeaderboardEntry[] }>();
 interface SocialProfilePrivacy {
@@ -50,6 +51,15 @@ interface SocialProfilePrivacy {
 interface UsageTotals {
   tokens: number;
   daysActive: number;
+}
+
+interface CloudTreePageCursor {
+  mode: "full" | "delta";
+  snapshot: string;
+  startedAt?: string;
+  updatedAt?: string;
+  deviceId: string;
+  bucketId: string;
 }
 
 interface RateLimitBinding {
@@ -505,6 +515,8 @@ async function deleteMe(request: Request, env: Env) {
     env.DB.prepare("DELETE FROM tree_devices WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM tree_device_stats WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM tree_model_stats WHERE user_id = ?").bind(user.userId),
+    env.DB.prepare("DELETE FROM tree_usage_buckets WHERE user_id = ?").bind(user.userId),
+    env.DB.prepare("DELETE FROM tree_usage_bucket_tombstones WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM usage_preferences WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM usage_visibility WHERE user_id = ?").bind(user.userId),
     env.DB.prepare("DELETE FROM usage_totals WHERE user_id = ?").bind(user.userId),
@@ -1248,7 +1260,10 @@ async function getSocialGroupLeaderboard(request: Request, env: Env, groupId: st
 async function getCloudTree(request: Request, env: Env) {
   const user = await requireAuth(request, env);
   await ensureCloudTreeTables(env);
-  return json(await cloudTreePayload(user.userId, env), env);
+  const url = new URL(request.url);
+  const protocol2 = url.searchParams.get("protocol") === "2";
+  const page = protocol2 ? cloudTreePageCursor(url.searchParams.get("page"), "full") : undefined;
+  return json(await cloudTreePayload(user.userId, env, undefined, page, protocol2), env);
 }
 
 async function getCloudTreeDelta(request: Request, env: Env) {
@@ -1257,25 +1272,108 @@ async function getCloudTreeDelta(request: Request, env: Env) {
   const url = new URL(request.url);
   const since = normalizeSyncCursor(url.searchParams.get("since"));
   if (!since) throw new HttpError(400, "A valid since cursor is required.", {}, "invalid_payload");
-  return json(await cloudTreePayload(user.userId, env, since), env);
+  const protocol2 = url.searchParams.get("protocol") === "2";
+  const page = protocol2 ? cloudTreePageCursor(url.searchParams.get("page"), "delta") : undefined;
+  return json(await cloudTreePayload(user.userId, env, since, page, protocol2), env);
 }
 
-async function cloudTreePayload(userId: string, env: Env, since?: string) {
-  const cursor = new Date().toISOString();
-  const eventQuery = since
-    ? `SELECT event_id AS id, device_id AS deviceId, created_at AS createdAt, source,
+async function cloudTreePayload(
+  userId: string,
+  env: Env,
+  since?: string,
+  page?: CloudTreePageCursor,
+  protocol2 = true,
+) {
+  const cursor = page?.snapshot ?? new Date().toISOString();
+  let eventQuery: string;
+  let eventBindings: Array<string | number>;
+  if (!protocol2 && since) {
+    eventQuery = `SELECT event_id AS id, device_id AS deviceId, created_at AS createdAt, source,
               tokens, input_tokens AS inputTokens, output_tokens AS outputTokens,
-              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens,
+              updated_at AS updatedAt
        FROM tree_events
        WHERE user_id = ? AND updated_at > ? AND updated_at <= ?
-       ORDER BY updated_at ASC, event_id ASC`
-    : `SELECT event_id AS id, device_id AS deviceId, created_at AS createdAt, source,
+       ORDER BY updated_at ASC, event_id ASC`;
+    eventBindings = [userId, since, cursor];
+  } else if (!protocol2) {
+    eventQuery = `SELECT event_id AS id, device_id AS deviceId, created_at AS createdAt, source,
               tokens, input_tokens AS inputTokens, output_tokens AS outputTokens,
-              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens,
+              updated_at AS updatedAt
        FROM tree_events
        WHERE user_id = ?
        ORDER BY created_at DESC
        LIMIT 50000`;
+    eventBindings = [userId];
+  } else if (since && page?.updatedAt) {
+    eventQuery = `SELECT 'cloud-bucket:' || device_id || ':' || bucket_id AS id,
+              device_id AS deviceId, bucket_id AS bucketId, started_at AS createdAt, source, model,
+              tokens, input_tokens AS inputTokens, output_tokens AS outputTokens,
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens,
+              event_count AS eventCount, updated_at AS updatedAt
+       FROM tree_usage_buckets
+       WHERE user_id = ? AND updated_at > ? AND updated_at <= ?
+         AND (updated_at > ? OR (updated_at = ? AND
+              (device_id > ? OR (device_id = ? AND bucket_id > ?))))
+       ORDER BY updated_at ASC, device_id ASC, bucket_id ASC
+       LIMIT ?`;
+    eventBindings = [
+      userId,
+      since,
+      cursor,
+      page.updatedAt,
+      page.updatedAt,
+      page.deviceId,
+      page.deviceId,
+      page.bucketId,
+      CLOUD_TREE_PAGE_SIZE + 1,
+    ];
+  } else if (since) {
+    eventQuery = `SELECT 'cloud-bucket:' || device_id || ':' || bucket_id AS id,
+              device_id AS deviceId, bucket_id AS bucketId, started_at AS createdAt, source, model,
+              tokens, input_tokens AS inputTokens, output_tokens AS outputTokens,
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens,
+              event_count AS eventCount, updated_at AS updatedAt
+       FROM tree_usage_buckets
+       WHERE user_id = ? AND updated_at > ? AND updated_at <= ?
+       ORDER BY updated_at ASC, device_id ASC, bucket_id ASC
+       LIMIT ?`;
+    eventBindings = [userId, since, cursor, CLOUD_TREE_PAGE_SIZE + 1];
+  } else if (page?.startedAt) {
+    eventQuery = `SELECT 'cloud-bucket:' || device_id || ':' || bucket_id AS id,
+              device_id AS deviceId, bucket_id AS bucketId, started_at AS createdAt, source, model,
+              tokens, input_tokens AS inputTokens, output_tokens AS outputTokens,
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens,
+              event_count AS eventCount, updated_at AS updatedAt
+       FROM tree_usage_buckets
+       WHERE user_id = ? AND updated_at <= ?
+         AND (started_at < ? OR (started_at = ? AND
+              (device_id > ? OR (device_id = ? AND bucket_id > ?))))
+       ORDER BY started_at DESC, device_id ASC, bucket_id ASC
+       LIMIT ?`;
+    eventBindings = [
+      userId,
+      cursor,
+      page.startedAt,
+      page.startedAt,
+      page.deviceId,
+      page.deviceId,
+      page.bucketId,
+      CLOUD_TREE_PAGE_SIZE + 1,
+    ];
+  } else {
+    eventQuery = `SELECT 'cloud-bucket:' || device_id || ':' || bucket_id AS id,
+              device_id AS deviceId, bucket_id AS bucketId, started_at AS createdAt, source, model,
+              tokens, input_tokens AS inputTokens, output_tokens AS outputTokens,
+              cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens,
+              event_count AS eventCount, updated_at AS updatedAt
+       FROM tree_usage_buckets
+       WHERE user_id = ? AND updated_at <= ?
+       ORDER BY started_at DESC, device_id ASC, bucket_id ASC
+       LIMIT ?`;
+    eventBindings = [userId, cursor, CLOUD_TREE_PAGE_SIZE + 1];
+  }
   const achievementQuery = since
     ? `SELECT achievement_id AS id, unlocked_at AS unlockedAt
        FROM tree_achievements
@@ -1283,7 +1381,7 @@ async function cloudTreePayload(userId: string, env: Env, since?: string) {
        ORDER BY updated_at ASC, achievement_id ASC`
     : `SELECT achievement_id AS id, unlocked_at AS unlockedAt
        FROM tree_achievements
-       WHERE user_id = ?
+       WHERE user_id = ? AND updated_at <= ?
        ORDER BY unlocked_at ASC`;
   const modelStatQuery = since
     ? `SELECT device_id AS deviceId, date, source, model, tokens,
@@ -1297,16 +1395,24 @@ async function cloudTreePayload(userId: string, env: Env, since?: string) {
               input_tokens AS inputTokens, output_tokens AS outputTokens,
               cache_read_tokens AS cacheReadTokens, cache_write_tokens AS cacheWriteTokens
        FROM tree_model_stats
-       WHERE user_id = ?
+       WHERE user_id = ? AND updated_at <= ?
        ORDER BY date ASC, source ASC, model ASC
        LIMIT 5000`;
-  const [eventRows, achievementRows, deviceRows, deviceTotalRows, modelStatRows] = await Promise.all([
+  const deletedEntryQuery = protocol2 && since
+    ? `SELECT device_id AS deviceId, bucket_id AS bucketId
+       FROM tree_usage_bucket_tombstones
+       WHERE user_id = ? AND deleted_at > ? AND deleted_at <= ?
+       ORDER BY deleted_at ASC, device_id ASC, bucket_id ASC`
+    : `SELECT device_id AS deviceId, bucket_id AS bucketId
+       FROM tree_usage_bucket_tombstones
+       WHERE 0`;
+  const [eventRows, achievementRows, deviceRows, deviceTotalRows, modelStatRows, deletedEntryRows] = await Promise.all([
     env.DB.prepare(
       eventQuery,
-    ).bind(...(since ? [userId, since, cursor] : [userId])).all<Record<string, unknown>>(),
+    ).bind(...eventBindings).all<Record<string, unknown>>(),
     env.DB.prepare(
       achievementQuery,
-    ).bind(...(since ? [userId, since, cursor] : [userId])).all<Record<string, unknown>>(),
+    ).bind(...(since ? [userId, since, cursor] : [userId, cursor])).all<Record<string, unknown>>(),
     env.DB.prepare(
       `SELECT device_id AS deviceId, alias, platform, last_synced_at AS lastSyncedAt,
               app_version AS appVersion
@@ -1320,18 +1426,26 @@ async function cloudTreePayload(userId: string, env: Env, since?: string) {
     ).bind(userId).all<Record<string, unknown>>(),
     env.DB.prepare(
       modelStatQuery,
-    ).bind(...(since ? [userId, since, cursor] : [userId])).all<Record<string, unknown>>(),
+    ).bind(...(since ? [userId, since, cursor] : [userId, cursor])).all<Record<string, unknown>>(),
+    env.DB.prepare(deletedEntryQuery)
+      .bind(...(protocol2 && since ? [userId, since, cursor] : []))
+      .all<Record<string, unknown>>(),
   ]);
-  const entries = (eventRows.results || []).map((row) => ({
+  const eventResults = eventRows.results || [];
+  const hasNextPage = protocol2 && eventResults.length > CLOUD_TREE_PAGE_SIZE;
+  const pageRows = protocol2 ? eventResults.slice(0, CLOUD_TREE_PAGE_SIZE) : eventResults;
+  const entries = pageRows.map((row) => ({
     id: String(row.id),
     deviceId: typeof row.deviceId === "string" ? row.deviceId : undefined,
     createdAt: String(row.createdAt),
     source: normalizeTreeEventSource(row.source, row.id),
+    model: typeof row.model === "string" && row.model ? row.model : undefined,
     tokens: numberOrZero(row.tokens),
     inputTokens: optionalNumber(row.inputTokens),
     outputTokens: optionalNumber(row.outputTokens),
     cacheReadTokens: optionalNumber(row.cacheReadTokens),
     cacheWriteTokens: optionalNumber(row.cacheWriteTokens),
+    eventCount: Math.max(1, numberOrZero(row.eventCount)),
   }));
   const achievements = (achievementRows.results || []).map((row) => ({
     id: String(row.id),
@@ -1390,18 +1504,35 @@ async function cloudTreePayload(userId: string, env: Env, since?: string) {
     cacheReadTokens: optionalNumber(row.cacheReadTokens),
     cacheWriteTokens: optionalNumber(row.cacheWriteTokens),
   }));
+  const deletedEntryIds = (deletedEntryRows.results || []).map(
+    (row) => `cloud-bucket:${String(row.deviceId)}:${String(row.bucketId)}`,
+  );
+  const lastPageRow = hasNextPage ? pageRows[pageRows.length - 1] : undefined;
+  const nextPage = protocol2 && lastPageRow
+    ? encodeCloudTreePageCursor({
+        mode: since ? "delta" : "full",
+        snapshot: cursor,
+        ...(since
+          ? { updatedAt: String(lastPageRow.updatedAt) }
+          : { startedAt: String(lastPageRow.createdAt) }),
+        deviceId: String(lastPageRow.deviceId),
+        bucketId: String(lastPageRow.bucketId),
+      })
+    : undefined;
   return {
     entries,
     achievements,
     devices,
     modelStats,
+    deletedEntryIds,
     cursor,
+    nextPage,
     delta: Boolean(since),
     modelStatsFull: !since,
     devicesFull: true,
     summary: {
       hasRemoteTree: entries.length > 0 || achievements.length > 0 || devices.length > 0 || modelStats.length > 0,
-      entryCount: entries.length,
+      entryCount: devices.reduce((total, device) => total + device.entryCount, 0),
       achievementCount: achievements.length,
       deviceCount: devices.length,
       modelStatCount: modelStats.length,
@@ -1417,6 +1548,11 @@ async function syncCloudTreeEvents(request: Request, env: Env) {
         deviceId?: string;
         device?: unknown;
         entries?: unknown[];
+        aggregationVersion?: unknown;
+        usageBuckets?: unknown[];
+        deletedUsageBucketIds?: unknown[];
+        replaceLegacyUsageBuckets?: boolean;
+        deviceStats?: unknown;
         modelStats?: unknown[];
         modelStatsEnabled?: boolean;
         appVersion?: string;
@@ -1427,24 +1563,63 @@ async function syncCloudTreeEvents(request: Request, env: Env) {
   const appVersion = cleanShortText(body?.appVersion, 32) ?? null;
   const entries = Array.isArray(body?.entries) ? body.entries.slice(0, 500) : [];
   const now = new Date().toISOString();
-  const eventStatements = entries.map((raw) => normalizeCloudTreeEvent(raw, user.userId, deviceId, appVersion, now, env)).filter(Boolean);
-  const eventDeviceIds = new Set(
-    entries
-      .map((raw) => cleanShortText((raw as Record<string, unknown> | undefined)?.deviceId, 80) ?? deviceId)
-      .filter((id): id is string => Boolean(id)),
+  const rawEventStatements = body?.aggregationVersion === 2
+    ? []
+    : entries
+      .map((raw) => normalizeLegacyCloudTreeEvent(raw, user.userId, deviceId, appVersion, now, env))
+      .filter((statement): statement is D1PreparedStatement => Boolean(statement));
+  const usageBuckets = normalizeCloudUsageBucketStatements(body?.usageBuckets, user.userId, deviceId, appVersion, now, env);
+  const deletedUsageBuckets = normalizeDeletedUsageBucketStatements(
+    body?.deletedUsageBucketIds,
+    user.userId,
+    deviceId,
+    now,
+    env,
   );
   const modelStats = normalizeCloudModelStatStatements(body, user.userId, deviceId, now, env);
+  let legacyUsageBucketStatements: D1PreparedStatement[] = [];
+  if (body?.aggregationVersion !== 2 && modelStats.rows.length) {
+    const existing = await env.DB.prepare(
+      "SELECT 1 AS present FROM tree_usage_buckets WHERE user_id = ? AND device_id = ? LIMIT 1",
+    ).bind(user.userId, deviceId).first<{ present?: number }>();
+    if (!existing?.present) {
+      legacyUsageBucketStatements = legacyModelUsageBucketStatements(
+        modelStats.rows,
+        user.userId,
+        deviceId,
+        appVersion,
+        now,
+        env,
+      );
+    }
+  }
+  const deviceStats =
+    normalizeCloudDeviceStatsStatement(body?.deviceStats, user.userId, deviceId, now, env) ??
+    (legacyUsageBucketStatements.length
+      ? legacyCloudDeviceStatsStatement(modelStats.rows, user.userId, deviceId, now, env)
+      : undefined);
   const statements = [
     upsertCloudTreeDevice(user.userId, deviceId, body?.device, appVersion, now, env),
-    ...eventStatements,
+    ...clearUsageBucketTombstoneStatements(usageBuckets.ids, user.userId, deviceId, env),
+    ...(body?.aggregationVersion === 2 && body.replaceLegacyUsageBuckets === true
+      ? replaceLegacyUsageBucketStatements(user.userId, deviceId, now, env)
+      : []),
+    ...rawEventStatements,
+    ...usageBuckets.statements,
+    ...deletedUsageBuckets.statements,
+    ...legacyUsageBucketStatements,
     ...modelStats.statements,
+    ...(deviceStats ? [deviceStats] : []),
   ];
-  if (statements.length) {
-    await env.DB.batch(statements as D1PreparedStatement[]);
-    if (eventStatements.length) await dedupeCloudTreeEventsForUser(user.userId, env);
-    if (eventStatements.length) await refreshCloudDeviceStats(user.userId, [...eventDeviceIds], env);
-  }
-  return json({ ok: true, synced: eventStatements.length, syncedModelStats: modelStats.count }, env);
+  if (statements.length) await env.DB.batch(statements as D1PreparedStatement[]);
+  return json({
+    ok: true,
+    synced: rawEventStatements.length,
+    syncedUsageBuckets: usageBuckets.count,
+    deletedUsageBuckets: deletedUsageBuckets.count,
+    syncedModelStats: modelStats.count,
+    deprecatedRawEvents: body?.aggregationVersion === 2 ? entries.length : 0,
+  }, env);
 }
 
 async function syncCloudTreeAchievements(request: Request, env: Env) {
@@ -1507,7 +1682,9 @@ async function syncDailyUsage(request: Request, env: Env) {
        ON CONFLICT(user_id, date) DO UPDATE SET
          xp = excluded.xp,
          app_version = excluded.app_version,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at
+       WHERE daily_usage.xp != excluded.xp
+          OR COALESCE(daily_usage.app_version, '') != COALESCE(excluded.app_version, '')`,
     ).bind(user.userId, day.date, day.xp, appVersion, now),
   );
   const hourlyStatements = normalizedHours.map((hour) =>
@@ -1517,7 +1694,9 @@ async function syncDailyUsage(request: Request, env: Env) {
        ON CONFLICT(user_id, hour_start_utc) DO UPDATE SET
          tokens = excluded.tokens,
          app_version = excluded.app_version,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at
+       WHERE hourly_usage.tokens != excluded.tokens
+          OR COALESCE(hourly_usage.app_version, '') != COALESCE(excluded.app_version, '')`,
     ).bind(user.userId, hour.hourStartUtc, hour.tokens, appVersion, now),
   );
   const preferenceStatements = preferenceRows.map((preference) =>
@@ -1535,7 +1714,14 @@ async function syncDailyUsage(request: Request, env: Env) {
          favorite_period_start = excluded.favorite_period_start,
          favorite_period_end = excluded.favorite_period_end,
          peak_tokens_per_minute = excluded.peak_tokens_per_minute,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at
+       WHERE COALESCE(usage_preferences.favorite_agent_label, '') != COALESCE(excluded.favorite_agent_label, '')
+          OR COALESCE(usage_preferences.favorite_agent_percent, -1) != COALESCE(excluded.favorite_agent_percent, -1)
+          OR COALESCE(usage_preferences.favorite_model, '') != COALESCE(excluded.favorite_model, '')
+          OR COALESCE(usage_preferences.favorite_period, '') != COALESCE(excluded.favorite_period, '')
+          OR COALESCE(usage_preferences.favorite_period_start, -1) != COALESCE(excluded.favorite_period_start, -1)
+          OR COALESCE(usage_preferences.favorite_period_end, -1) != COALESCE(excluded.favorite_period_end, -1)
+          OR COALESCE(usage_preferences.peak_tokens_per_minute, -1) != COALESCE(excluded.peak_tokens_per_minute, -1)`,
     ).bind(
       user.userId,
       preference.range,
@@ -1554,13 +1740,38 @@ async function syncDailyUsage(request: Request, env: Env) {
   await ensureHourlyUsageTable(env);
   await ensureUsageVisibilityTable(env);
   await ensureUsageTotalsTable(env);
+  const dailyDates = normalizedDays.map((day) => day.date);
+  const dailyPrune = dailyDates.length
+    ? env.DB.prepare(
+        `DELETE FROM daily_usage
+         WHERE user_id = ? AND date >= ? AND date <= ?
+           AND date NOT IN (${dailyDates.map(() => "?").join(", ")})`,
+      ).bind(user.userId, syncWindow.earliest, syncWindow.latest, ...dailyDates)
+    : env.DB.prepare("DELETE FROM daily_usage WHERE user_id = ? AND date >= ? AND date <= ?")
+      .bind(user.userId, syncWindow.earliest, syncWindow.latest);
+  const hourlyKeys = normalizedHours.map((hour) => hour.hourStartUtc);
+  const hourlyPrune = hasHourlyUsage
+    ? hourlyKeys.length
+      ? env.DB.prepare(
+          `DELETE FROM hourly_usage
+           WHERE user_id = ? AND hour_start_utc >= ? AND hour_start_utc <= ?
+             AND hour_start_utc NOT IN (${hourlyKeys.map(() => "?").join(", ")})`,
+        ).bind(user.userId, hourWindow.earliest, hourWindow.latest, ...hourlyKeys)
+      : env.DB.prepare(
+          "DELETE FROM hourly_usage WHERE user_id = ? AND hour_start_utc >= ? AND hour_start_utc <= ?",
+        ).bind(user.userId, hourWindow.earliest, hourWindow.latest)
+    : undefined;
+  const preferenceRanges = preferenceRows.map((preference) => preference.range);
+  const preferencePrune = preferenceRanges.length
+    ? env.DB.prepare(
+        `DELETE FROM usage_preferences WHERE user_id = ? AND range NOT IN (${preferenceRanges.map(() => "?").join(", ")})`,
+      ).bind(user.userId, ...preferenceRanges)
+    : env.DB.prepare("DELETE FROM usage_preferences WHERE user_id = ?").bind(user.userId);
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM daily_usage WHERE user_id = ? AND date >= ? AND date <= ?")
-      .bind(user.userId, syncWindow.earliest, syncWindow.latest),
+    dailyPrune,
     ...(hasHourlyUsage
       ? [
-          env.DB.prepare("DELETE FROM hourly_usage WHERE user_id = ? AND hour_start_utc >= ? AND hour_start_utc <= ?")
-            .bind(user.userId, hourWindow.earliest, hourWindow.latest),
+          hourlyPrune!,
           env.DB.prepare("DELETE FROM hourly_usage WHERE user_id = ? AND hour_start_utc < ?")
             .bind(user.userId, hourWindow.earliest),
         ]
@@ -1568,7 +1779,7 @@ async function syncDailyUsage(request: Request, env: Env) {
     ...(usageStartDate
       ? [env.DB.prepare("DELETE FROM daily_usage WHERE user_id = ? AND date < ?").bind(user.userId, usageStartDate)]
       : []),
-    env.DB.prepare("DELETE FROM usage_preferences WHERE user_id = ?").bind(user.userId),
+    preferencePrune,
     ...statements,
     ...hourlyStatements,
     ...(totalTokens !== undefined
@@ -1577,11 +1788,15 @@ async function syncDailyUsage(request: Request, env: Env) {
             `INSERT INTO usage_totals (user_id, tokens, days_active, first_usage_date, app_version, updated_at)
              VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET
-               tokens = excluded.tokens,
-               days_active = excluded.days_active,
-               first_usage_date = excluded.first_usage_date,
-               app_version = excluded.app_version,
-               updated_at = excluded.updated_at`,
+             tokens = excluded.tokens,
+             days_active = excluded.days_active,
+             first_usage_date = excluded.first_usage_date,
+             app_version = excluded.app_version,
+             updated_at = excluded.updated_at
+           WHERE usage_totals.tokens != excluded.tokens
+              OR usage_totals.days_active != excluded.days_active
+              OR COALESCE(usage_totals.first_usage_date, '') != COALESCE(excluded.first_usage_date, '')
+              OR COALESCE(usage_totals.app_version, '') != COALESCE(excluded.app_version, '')`,
           ).bind(user.userId, totalTokens, totalDaysActive ?? 0, firstUsageDate ?? null, appVersion, now),
         ]
       : []),
@@ -1596,7 +1811,8 @@ async function syncDailyUsage(request: Request, env: Env) {
        VALUES (?, ?, ?)
        ON CONFLICT(user_id) DO UPDATE SET
          public_global = excluded.public_global,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at
+       WHERE usage_visibility.public_global != excluded.public_global`,
     ).bind(user.userId, usagePublic ? 1 : 0, now),
   ]);
   leaderboardCache.clear();
@@ -1637,7 +1853,32 @@ async function enforceSyncCooldown(userId: string, env: Env) {
   }
 }
 
+const schemaEnsureStates = new WeakMap<object, Map<string, Promise<void>>>();
+
+async function ensureSchemaOnce(env: Env, key: string, create: () => Promise<void>) {
+  let states = schemaEnsureStates.get(env.DB as object);
+  if (!states) {
+    states = new Map();
+    schemaEnsureStates.set(env.DB as object, states);
+  }
+  let pending = states.get(key);
+  if (!pending) {
+    pending = create();
+    states.set(key, pending);
+  }
+  try {
+    await pending;
+  } catch (error) {
+    if (states.get(key) === pending) states.delete(key);
+    throw error;
+  }
+}
+
 async function ensureUsagePreferencesTable(env: Env) {
+  await ensureSchemaOnce(env, "usage-preferences", () => createUsagePreferencesTable(env));
+}
+
+async function createUsagePreferencesTable(env: Env) {
   await env.DB.batch([
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS usage_preferences (
@@ -1660,6 +1901,10 @@ async function ensureUsagePreferencesTable(env: Env) {
 }
 
 async function ensureHourlyUsageTable(env: Env) {
+  await ensureSchemaOnce(env, "hourly-usage", () => createHourlyUsageTable(env));
+}
+
+async function createHourlyUsageTable(env: Env) {
   await env.DB.batch([
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS hourly_usage (
@@ -1678,6 +1923,10 @@ async function ensureHourlyUsageTable(env: Env) {
 }
 
 async function ensureUsageVisibilityTable(env: Env) {
+  await ensureSchemaOnce(env, "usage-visibility", () => createUsageVisibilityTable(env));
+}
+
+async function createUsageVisibilityTable(env: Env) {
   await env.DB.prepare(
     `CREATE TABLE IF NOT EXISTS usage_visibility (
       user_id TEXT PRIMARY KEY,
@@ -1689,6 +1938,10 @@ async function ensureUsageVisibilityTable(env: Env) {
 }
 
 async function ensureUsageTotalsTable(env: Env) {
+  await ensureSchemaOnce(env, "usage-totals", () => createUsageTotalsTable(env));
+}
+
+async function createUsageTotalsTable(env: Env) {
   await env.DB.batch([
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS usage_totals (
@@ -1706,6 +1959,10 @@ async function ensureUsageTotalsTable(env: Env) {
 }
 
 async function ensureCloudTreeTables(env: Env) {
+  await ensureSchemaOnce(env, "cloud-tree", () => createCloudTreeTables(env));
+}
+
+async function createCloudTreeTables(env: Env) {
   await env.DB.batch([
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS tree_events (
@@ -1779,6 +2036,36 @@ async function ensureCloudTreeTables(env: Env) {
         FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
       )`,
     ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS tree_usage_buckets (
+        user_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        bucket_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        source TEXT NOT NULL,
+        model TEXT,
+        tokens INTEGER NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        cache_write_tokens INTEGER,
+        event_count INTEGER NOT NULL DEFAULT 1,
+        app_version TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, device_id, bucket_id),
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      )`,
+    ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS tree_usage_bucket_tombstones (
+        user_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        bucket_id TEXT NOT NULL,
+        deleted_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, device_id, bucket_id),
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      )`,
+    ),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_events_user_created ON tree_events(user_id, created_at)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_events_device ON tree_events(user_id, device_id)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_events_user_updated ON tree_events(user_id, updated_at)"),
@@ -1791,10 +2078,17 @@ async function ensureCloudTreeTables(env: Env) {
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_model_stats_user ON tree_model_stats(user_id)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_model_stats_device ON tree_model_stats(user_id, device_id)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_model_stats_user_updated ON tree_model_stats(user_id, updated_at)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_usage_buckets_user_started ON tree_usage_buckets(user_id, started_at)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_usage_buckets_user_updated ON tree_usage_buckets(user_id, updated_at, device_id, bucket_id)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tree_usage_bucket_tombstones_user_deleted ON tree_usage_bucket_tombstones(user_id, deleted_at, device_id, bucket_id)"),
   ]);
 }
 
 async function ensureSocialTables(env: Env) {
+  await ensureSchemaOnce(env, "social", () => createSocialTables(env));
+}
+
+async function createSocialTables(env: Env) {
   await env.DB.batch([
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS social_friendships (
@@ -2465,7 +2759,7 @@ async function socialGroupLeaderboardDataForRange(
   };
 }
 
-function normalizeCloudTreeEvent(
+function normalizeLegacyCloudTreeEvent(
   raw: unknown,
   userId: string,
   fallbackDeviceId: string,
@@ -2477,17 +2771,16 @@ function normalizeCloudTreeEvent(
   if (!input || typeof input !== "object") return undefined;
   const eventId = cleanShortText(input.id, 160);
   const createdAt = typeof input.createdAt === "string" && Number.isFinite(Date.parse(input.createdAt))
-    ? input.createdAt
-    : "";
+    ? new Date(input.createdAt).toISOString()
+    : undefined;
   const source = normalizeTreeEventSource(input.source, eventId);
   const tokens = normalizeTokenCount(input.tokens);
-  if (!eventId || !createdAt || !source || tokens === undefined) return undefined;
+  if (!eventId || !createdAt || source === "cloud-sync" || tokens === undefined) return undefined;
   return env.DB.prepare(
     `INSERT INTO tree_events (
        user_id, event_id, device_id, created_at, source, tokens,
        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, app_version, updated_at
-     )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, event_id) DO UPDATE SET
        device_id = excluded.device_id,
        created_at = excluded.created_at,
@@ -2498,7 +2791,16 @@ function normalizeCloudTreeEvent(
        cache_read_tokens = excluded.cache_read_tokens,
        cache_write_tokens = excluded.cache_write_tokens,
        app_version = excluded.app_version,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at
+     WHERE COALESCE(tree_events.device_id, '') != COALESCE(excluded.device_id, '')
+        OR tree_events.created_at != excluded.created_at
+        OR tree_events.source != excluded.source
+        OR tree_events.tokens != excluded.tokens
+        OR COALESCE(tree_events.input_tokens, -1) != COALESCE(excluded.input_tokens, -1)
+        OR COALESCE(tree_events.output_tokens, -1) != COALESCE(excluded.output_tokens, -1)
+        OR COALESCE(tree_events.cache_read_tokens, -1) != COALESCE(excluded.cache_read_tokens, -1)
+        OR COALESCE(tree_events.cache_write_tokens, -1) != COALESCE(excluded.cache_write_tokens, -1)
+        OR COALESCE(tree_events.app_version, '') != COALESCE(excluded.app_version, '')`,
   ).bind(
     userId,
     eventId,
@@ -2540,27 +2842,201 @@ function upsertCloudTreeDevice(
   ).bind(userId, deviceId, alias, platform, now, now, appVersion, now);
 }
 
-async function refreshCloudDeviceStats(userId: string, deviceIds: string[], env: Env) {
-  const uniqueDeviceIds = [...new Set(deviceIds)].filter(Boolean);
-  if (!uniqueDeviceIds.length) return;
-  const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [];
-  for (const deviceId of uniqueDeviceIds) {
-    statements.push(
+interface NormalizedCloudUsageBucket {
+  id: string;
+  startedAt: string;
+  source: string;
+  model: string | null;
+  tokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  eventCount: number;
+}
+
+function normalizeCloudUsageBucketStatements(
+  rawBuckets: unknown,
+  userId: string,
+  deviceId: string,
+  appVersion: string | null,
+  now: string,
+  env: Env,
+) {
+  const buckets = Array.isArray(rawBuckets)
+    ? rawBuckets.slice(0, 200).map(normalizeCloudUsageBucket).filter((row): row is NormalizedCloudUsageBucket => Boolean(row))
+    : [];
+  return {
+    count: buckets.length,
+    ids: buckets.map((row) => row.id),
+    statements: buckets.map((row) => env.DB.prepare(
+      `INSERT INTO tree_usage_buckets (
+         user_id, device_id, bucket_id, started_at, source, model, tokens,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+         event_count, app_version, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, device_id, bucket_id) DO UPDATE SET
+         started_at = excluded.started_at,
+         source = excluded.source,
+         model = excluded.model,
+         tokens = excluded.tokens,
+         input_tokens = excluded.input_tokens,
+         output_tokens = excluded.output_tokens,
+         cache_read_tokens = excluded.cache_read_tokens,
+         cache_write_tokens = excluded.cache_write_tokens,
+         event_count = excluded.event_count,
+         app_version = excluded.app_version,
+         updated_at = excluded.updated_at
+       WHERE tree_usage_buckets.started_at != excluded.started_at
+          OR tree_usage_buckets.source != excluded.source
+          OR COALESCE(tree_usage_buckets.model, '') != COALESCE(excluded.model, '')
+          OR tree_usage_buckets.tokens != excluded.tokens
+          OR COALESCE(tree_usage_buckets.input_tokens, -1) != COALESCE(excluded.input_tokens, -1)
+          OR COALESCE(tree_usage_buckets.output_tokens, -1) != COALESCE(excluded.output_tokens, -1)
+          OR COALESCE(tree_usage_buckets.cache_read_tokens, -1) != COALESCE(excluded.cache_read_tokens, -1)
+          OR COALESCE(tree_usage_buckets.cache_write_tokens, -1) != COALESCE(excluded.cache_write_tokens, -1)
+          OR tree_usage_buckets.event_count != excluded.event_count
+          OR COALESCE(tree_usage_buckets.app_version, '') != COALESCE(excluded.app_version, '')`,
+    ).bind(
+      userId,
+      deviceId,
+      row.id,
+      row.startedAt,
+      row.source,
+      row.model,
+      row.tokens,
+      row.inputTokens,
+      row.outputTokens,
+      row.cacheReadTokens,
+      row.cacheWriteTokens,
+      row.eventCount,
+      appVersion,
+      now,
+    )),
+  };
+}
+
+function normalizeCloudUsageBucket(raw: unknown): NormalizedCloudUsageBucket | undefined {
+  const input = raw as Record<string, unknown> | undefined;
+  if (!input || typeof input !== "object") return undefined;
+  const id = cleanShortText(input.id, 160);
+  const startedAt = typeof input.startedAt === "string" && Number.isFinite(Date.parse(input.startedAt))
+    ? new Date(input.startedAt).toISOString()
+    : undefined;
+  const source = normalizeTreeEventSource(input.source, id);
+  const model = cleanShortText(input.model, 64) ?? null;
+  const tokens = normalizeTokenCount(input.tokens);
+  const eventCount = normalizeActiveDays(input.eventCount);
+  if (!id || !startedAt || source === "cloud-sync" || tokens === undefined || tokens <= 0 || !eventCount) return undefined;
+  return {
+    id,
+    startedAt,
+    source,
+    model,
+    tokens,
+    inputTokens: normalizeTokenCount(input.inputTokens) ?? null,
+    outputTokens: normalizeTokenCount(input.outputTokens) ?? null,
+    cacheReadTokens: normalizeTokenCount(input.cacheReadTokens) ?? null,
+    cacheWriteTokens: normalizeTokenCount(input.cacheWriteTokens) ?? null,
+    eventCount,
+  };
+}
+
+function normalizeDeletedUsageBucketStatements(
+  rawIds: unknown,
+  userId: string,
+  deviceId: string,
+  now: string,
+  env: Env,
+) {
+  const ids = Array.isArray(rawIds)
+    ? [...new Set(rawIds
+    .slice(0, 200)
+    .map((value) => cleanShortText(value, 160))
+    .filter((value): value is string => Boolean(value)))]
+    : [];
+  if (!ids.length) return { count: 0, statements: [] as D1PreparedStatement[] };
+  const values = ids.map(() => "(?, ?, ?, ?)").join(", ");
+  const placeholders = ids.map(() => "?").join(", ");
+  return {
+    count: ids.length,
+    statements: [
       env.DB.prepare(
-        `INSERT INTO tree_device_stats (user_id, device_id, entry_count, tokens, last_event_updated_at, updated_at)
-         SELECT ?, ?, COUNT(*), COALESCE(SUM(tokens), 0), MAX(updated_at), ?
-         FROM tree_events
-         WHERE user_id = ? AND device_id = ?
-         ON CONFLICT(user_id, device_id) DO UPDATE SET
-           entry_count = excluded.entry_count,
-           tokens = excluded.tokens,
-           last_event_updated_at = excluded.last_event_updated_at,
-           updated_at = excluded.updated_at`,
-      ).bind(userId, deviceId, now, userId, deviceId),
-    );
-  }
-  await env.DB.batch(statements);
+        `INSERT INTO tree_usage_bucket_tombstones (user_id, device_id, bucket_id, deleted_at)
+         VALUES ${values}
+         ON CONFLICT(user_id, device_id, bucket_id) DO UPDATE SET deleted_at = excluded.deleted_at`,
+      ).bind(...ids.flatMap((id) => [userId, deviceId, id, now])),
+      env.DB.prepare(
+        `DELETE FROM tree_usage_buckets
+         WHERE user_id = ? AND device_id = ? AND bucket_id IN (${placeholders})`,
+      ).bind(userId, deviceId, ...ids),
+    ],
+  };
+}
+
+function clearUsageBucketTombstoneStatements(ids: string[], userId: string, deviceId: string, env: Env) {
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  return [env.DB.prepare(
+    `DELETE FROM tree_usage_bucket_tombstones
+     WHERE user_id = ? AND device_id = ? AND bucket_id IN (${placeholders})`,
+  ).bind(userId, deviceId, ...ids)];
+}
+
+function replaceLegacyUsageBucketStatements(userId: string, deviceId: string, now: string, env: Env) {
+  return [
+    env.DB.prepare(
+      `INSERT OR REPLACE INTO tree_usage_bucket_tombstones (user_id, device_id, bucket_id, deleted_at)
+       SELECT user_id, device_id, bucket_id, ?
+       FROM tree_usage_buckets
+       WHERE user_id = ? AND device_id = ? AND bucket_id LIKE 'legacy-%'`,
+    ).bind(now, userId, deviceId),
+    env.DB.prepare(
+      `DELETE FROM tree_usage_buckets
+       WHERE user_id = ? AND device_id = ? AND bucket_id LIKE 'legacy-%'`,
+    ).bind(userId, deviceId),
+  ];
+}
+
+function normalizeCloudDeviceStatsStatement(raw: unknown, userId: string, deviceId: string, now: string, env: Env) {
+  const input = raw as Record<string, unknown> | undefined;
+  if (!input || typeof input !== "object") return undefined;
+  const entryCount = normalizeTokenCount(input.entryCount);
+  const tokens = normalizeTokenCount(input.tokens);
+  if (entryCount === undefined || tokens === undefined) return undefined;
+  return upsertCloudDeviceStatsStatement(userId, deviceId, entryCount, tokens, now, env);
+}
+
+function upsertCloudDeviceStatsStatement(
+  userId: string,
+  deviceId: string,
+  entryCount: number,
+  tokens: number,
+  now: string,
+  env: Env,
+) {
+  return env.DB.prepare(
+    `INSERT INTO tree_device_stats (user_id, device_id, entry_count, tokens, last_event_updated_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, device_id) DO UPDATE SET
+       entry_count = excluded.entry_count,
+       tokens = excluded.tokens,
+       last_event_updated_at = excluded.last_event_updated_at,
+       updated_at = excluded.updated_at
+     WHERE tree_device_stats.entry_count != excluded.entry_count
+        OR tree_device_stats.tokens != excluded.tokens`,
+  ).bind(userId, deviceId, entryCount, tokens, now, now);
+}
+
+interface NormalizedCloudModelStat {
+  date: string;
+  source: string;
+  model: string;
+  tokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 function normalizeCloudModelStatStatements(
@@ -2572,15 +3048,20 @@ function normalizeCloudModelStatStatements(
 ) {
   const rawRows = Array.isArray(body?.modelStats) ? body.modelStats : undefined;
   if (!rawRows && body?.modelStatsEnabled !== false) {
-    return { statements: [], count: 0 };
+    return { statements: [], rows: [] as NormalizedCloudModelStat[], count: 0 };
   }
 
   const rows = rawRows
-    ? rawRows.slice(0, 1000).map(normalizeCloudModelStat).filter(Boolean)
+    ? rawRows
+        .slice(0, 1000)
+        .map(normalizeCloudModelStat)
+        .filter((row): row is NormalizedCloudModelStat => Boolean(row))
     : [];
   return {
     statements: [
-      env.DB.prepare("DELETE FROM tree_model_stats WHERE user_id = ? AND device_id = ?").bind(userId, deviceId),
+      ...(body?.modelStatsEnabled === false && !rawRows
+        ? [env.DB.prepare("DELETE FROM tree_model_stats WHERE user_id = ? AND device_id = ?").bind(userId, deviceId)]
+        : []),
       ...rows.map((row) =>
         env.DB.prepare(
           `INSERT INTO tree_model_stats (
@@ -2594,7 +3075,12 @@ function normalizeCloudModelStatStatements(
              output_tokens = excluded.output_tokens,
              cache_read_tokens = excluded.cache_read_tokens,
              cache_write_tokens = excluded.cache_write_tokens,
-             updated_at = excluded.updated_at`,
+             updated_at = excluded.updated_at
+           WHERE tree_model_stats.tokens != excluded.tokens
+              OR COALESCE(tree_model_stats.input_tokens, -1) != COALESCE(excluded.input_tokens, -1)
+              OR COALESCE(tree_model_stats.output_tokens, -1) != COALESCE(excluded.output_tokens, -1)
+              OR COALESCE(tree_model_stats.cache_read_tokens, -1) != COALESCE(excluded.cache_read_tokens, -1)
+              OR COALESCE(tree_model_stats.cache_write_tokens, -1) != COALESCE(excluded.cache_write_tokens, -1)`,
         ).bind(
           userId,
           deviceId,
@@ -2610,11 +3096,12 @@ function normalizeCloudModelStatStatements(
         ),
       ),
     ],
+    rows,
     count: rows.length,
   };
 }
 
-function normalizeCloudModelStat(raw: unknown) {
+function normalizeCloudModelStat(raw: unknown): NormalizedCloudModelStat | undefined {
   const input = raw as Record<string, unknown> | undefined;
   if (!input || typeof input !== "object") return undefined;
   const date = typeof input.date === "string" && isDateKey(input.date) ? input.date : undefined;
@@ -2632,6 +3119,64 @@ function normalizeCloudModelStat(raw: unknown) {
     cacheReadTokens: normalizeTokenCount(input.cacheReadTokens),
     cacheWriteTokens: normalizeTokenCount(input.cacheWriteTokens),
   };
+}
+
+function legacyModelUsageBucketStatements(
+  rows: NormalizedCloudModelStat[],
+  userId: string,
+  deviceId: string,
+  appVersion: string | null,
+  now: string,
+  env: Env,
+) {
+  return rows.map((row) => {
+    const bucketId = `legacy-model-v1|${row.date}|${row.source}|${row.model}`;
+    return env.DB.prepare(
+      `INSERT INTO tree_usage_buckets (
+         user_id, device_id, bucket_id, started_at, source, model, tokens,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+         event_count, app_version, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+       ON CONFLICT(user_id, device_id, bucket_id) DO UPDATE SET
+         tokens = excluded.tokens,
+         input_tokens = excluded.input_tokens,
+         output_tokens = excluded.output_tokens,
+         cache_read_tokens = excluded.cache_read_tokens,
+         cache_write_tokens = excluded.cache_write_tokens,
+         app_version = excluded.app_version,
+         updated_at = excluded.updated_at
+       WHERE tree_usage_buckets.tokens != excluded.tokens
+          OR COALESCE(tree_usage_buckets.input_tokens, -1) != COALESCE(excluded.input_tokens, -1)
+          OR COALESCE(tree_usage_buckets.output_tokens, -1) != COALESCE(excluded.output_tokens, -1)
+          OR COALESCE(tree_usage_buckets.cache_read_tokens, -1) != COALESCE(excluded.cache_read_tokens, -1)
+          OR COALESCE(tree_usage_buckets.cache_write_tokens, -1) != COALESCE(excluded.cache_write_tokens, -1)`,
+    ).bind(
+      userId,
+      deviceId,
+      bucketId,
+      `${row.date}T12:00:00.000Z`,
+      row.source,
+      row.model,
+      row.tokens,
+      row.inputTokens ?? null,
+      row.outputTokens ?? null,
+      row.cacheReadTokens ?? null,
+      row.cacheWriteTokens ?? null,
+      appVersion,
+      now,
+    );
+  });
+}
+
+function legacyCloudDeviceStatsStatement(
+  rows: NormalizedCloudModelStat[],
+  userId: string,
+  deviceId: string,
+  now: string,
+  env: Env,
+) {
+  const tokens = rows.reduce((total, row) => total + row.tokens, 0);
+  return upsertCloudDeviceStatsStatement(userId, deviceId, rows.length, tokens, now, env);
 }
 
 function normalizeTreeEventSource(value: unknown, eventId?: unknown) {
@@ -2662,27 +3207,6 @@ const SAFE_TREE_EVENT_SOURCES = new Set([
   "deepseek-session",
   "cloud-sync",
 ]);
-
-async function dedupeCloudTreeEventsForUser(userId: string, env: Env) {
-  await env.DB.prepare(
-    `DELETE FROM tree_events
-     WHERE user_id = ?
-       AND rowid NOT IN (
-         SELECT MIN(rowid)
-         FROM tree_events
-         WHERE user_id = ?
-         GROUP BY
-           user_id,
-           source,
-           created_at,
-           tokens,
-           COALESCE(input_tokens, -1),
-           COALESCE(output_tokens, -1),
-           COALESCE(cache_read_tokens, -1),
-           COALESCE(cache_write_tokens, -1)
-       )`,
-  ).bind(userId, userId).run();
-}
 
 function normalizeCloudTreeAchievement(
   raw: unknown,
@@ -3387,6 +3911,52 @@ function normalizeSyncCursor(value: unknown) {
   if (!Number.isFinite(date.getTime())) return undefined;
   const iso = date.toISOString();
   return iso <= new Date(Date.now() + 60_000).toISOString() ? iso : undefined;
+}
+
+function cloudTreePageCursor(value: string | null, expectedMode: CloudTreePageCursor["mode"]) {
+  if (!value) return undefined;
+  if (value.length > 4_096) throw new HttpError(400, "Invalid cloud tree page cursor.", {}, "invalid_payload");
+  try {
+    const parsed = JSON.parse(decodeBase64Url(value)) as Partial<CloudTreePageCursor>;
+    const snapshot = normalizeSyncCursor(parsed.snapshot);
+    const deviceId = cleanShortText(parsed.deviceId, 80);
+    const bucketId = cleanShortText(parsed.bucketId, 120);
+    const startedAt = parsed.startedAt ? normalizeSyncCursor(parsed.startedAt) : undefined;
+    const updatedAt = parsed.updatedAt ? normalizeSyncCursor(parsed.updatedAt) : undefined;
+    if (
+      parsed.mode !== expectedMode ||
+      !snapshot ||
+      !deviceId ||
+      !bucketId ||
+      (expectedMode === "full" && !startedAt) ||
+      (expectedMode === "delta" && !updatedAt)
+    ) {
+      throw new Error("invalid cursor");
+    }
+    return {
+      mode: expectedMode,
+      snapshot,
+      deviceId,
+      bucketId,
+      ...(startedAt ? { startedAt } : {}),
+      ...(updatedAt ? { updatedAt } : {}),
+    } satisfies CloudTreePageCursor;
+  } catch {
+    throw new HttpError(400, "Invalid cloud tree page cursor.", {}, "invalid_payload");
+  }
+}
+
+function encodeCloudTreePageCursor(value: CloudTreePageCursor) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeBase64Url(value: string) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(base64);
+  return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
 }
 
 function floorUtcHour(date: Date) {

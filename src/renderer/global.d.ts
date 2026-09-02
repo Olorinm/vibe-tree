@@ -38,7 +38,7 @@ declare global {
     bonsai: {
       getLedger: () => Promise<LedgerFile>;
       addEntry: (input: { tokens: number; note?: string }) => Promise<LedgerFile>;
-      updateSettings: (partial: Partial<Settings>) => Promise<LedgerFile>;
+      updateSettings: (partial: Partial<Settings>) => Promise<Settings>;
       setExpanded: (expanded: boolean) => Promise<boolean>;
       getWindowBounds: () => Promise<WindowBounds | null>;
       setWindowPosition: (position: { x: number; y: number }) => Promise<void>;
@@ -100,6 +100,9 @@ declare global {
       notifyAchievementToastDrained: () => void;
       notifyManagerReady: () => void;
       onLedger: (callback: (ledger: LedgerFile) => void) => () => void;
+      onLedgerAppend: (callback: (entries: LedgerEntry[]) => void) => () => void;
+      onLedgerPatch: (callback: (patch: { upserted: LedgerEntry[]; deletedIds: string[] }) => void) => () => void;
+      onSettings: (callback: (settings: Settings) => void) => () => void;
       onExpanded: (callback: (expanded: boolean) => void) => () => void;
       onOpenAddToken: (callback: () => void) => () => void;
       onOpenSettings: (callback: (category?: string | null) => void) => () => void;

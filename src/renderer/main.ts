@@ -11,6 +11,7 @@ import type {
   LeaderboardRange,
   LeaderboardStatus,
   SessionMonitorStatus,
+  Settings,
   SocialFriend,
   SocialGroup,
   SocialGroupInvite,
@@ -219,6 +220,7 @@ let ledgerEntriesSignatureCache:
       signature: string;
     }
   | undefined;
+let ledgerEntriesRevision = 0;
 let socialProfileOpen = false;
 let socialProfileLoading = false;
 let socialProfileUserId: string | null = null;
@@ -962,6 +964,13 @@ async function boot() {
       applyUiTheme("night");
       applyI18n();
     });
+    window.bonsai.onSettings((settings) => {
+      if (!ledger) return;
+      ledger = { ...ledger, settings };
+      appLanguage = normalizeLanguage(settings.language);
+      applyUiTheme("night");
+      applyI18n();
+    });
     bindToastOverlayEvents();
     return;
   }
@@ -1022,6 +1031,41 @@ async function boot() {
     appLanguage = normalizeLanguage(ledger.settings.language);
     applyI18n();
     // The visible component set lives in settings; rebuild the pager when it changes.
+    if (viewMode === "menubar") refreshMenubarViz();
+    render();
+  });
+  window.bonsai.onLedgerAppend((entries) => {
+    if (!ledger || !entries.length) return;
+    ledger = { ...ledger, entries: entries.concat(ledger.entries) };
+    render();
+  });
+  window.bonsai.onLedgerPatch(({ upserted, deletedIds }) => {
+    if (!ledger || (!upserted.length && !deletedIds.length)) return;
+    const deleted = new Set(deletedIds);
+    const upsertedById = new Map(upserted.map((entry) => [entry.id, entry]));
+    const replacedIds = new Set<string>();
+    const entries = ledger.entries
+      .filter((entry) => !deleted.has(entry.id))
+      .map((entry) => {
+        const replacement = upsertedById.get(entry.id);
+        if (replacement) replacedIds.add(entry.id);
+        return replacement ?? entry;
+      });
+    let added = false;
+    for (const entry of upserted) {
+      if (replacedIds.has(entry.id)) continue;
+      entries.push(entry);
+      added = true;
+    }
+    if (added) entries.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+    ledger = { ...ledger, entries };
+    render();
+  });
+  window.bonsai.onSettings((settings) => {
+    if (!ledger) return;
+    ledger = { ...ledger, settings };
+    appLanguage = normalizeLanguage(settings.language);
+    applyI18n();
     if (viewMode === "menubar") refreshMenubarViz();
     render();
   });
@@ -1196,7 +1240,7 @@ function bindEvents() {
 
   lockInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({ locked: lockInput.checked });
+    ledger = await updateLedgerSettings({ locked: lockInput.checked });
     render();
   });
 
@@ -1266,7 +1310,7 @@ function bindEvents() {
 
   scaleSelect?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({ scale: Number(scaleSelect.value) });
+    ledger = await updateLedgerSettings({ scale: Number(scaleSelect.value) });
     render();
   });
 
@@ -1274,12 +1318,12 @@ function bindEvents() {
     if (!ledger) return;
     const scale = Number(fontScaleSelect.value);
     document.documentElement.style.setProperty("--font-scale", String(scale));
-    ledger = await window.bonsai.updateSettings({ fontScale: scale });
+    ledger = await updateLedgerSettings({ fontScale: scale });
   });
 
   languageSelect?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({ language: normalizeLanguage(languageSelect.value) });
+    ledger = await updateLedgerSettings({ language: normalizeLanguage(languageSelect.value) });
     appLanguage = ledger.settings.language;
     lastHistoryChartKey = "";
     applyI18n();
@@ -1292,7 +1336,7 @@ function bindEvents() {
     if (!button) return;
     const uiTheme = normalizeUiTheme(button.dataset.uiTheme);
     if (uiTheme === ledger.settings.uiTheme) return;
-    ledger = await window.bonsai.updateSettings({ uiTheme });
+    ledger = await updateLedgerSettings({ uiTheme });
     render();
   });
 
@@ -1300,7 +1344,7 @@ function bindEvents() {
     const input = (event.target as HTMLElement).closest<HTMLInputElement>("[data-stats-source]");
     if (!ledger || !input) return;
     const enabledSourceIds = selectedStatsSourceIds();
-    ledger = await window.bonsai.updateSettings({ enabledSourceIds });
+    ledger = await updateLedgerSettings({ enabledSourceIds });
     if (historyFilter !== "all" && !sourceVisibility().visibleSet.has(historyFilter)) historyFilter = "all";
     expandedSourceKey = null;
     lastHistoryChartKey = "";
@@ -1309,25 +1353,25 @@ function bindEvents() {
 
   launchOnStartupInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({ launchOnStartup: launchOnStartupInput.checked });
+    ledger = await updateLedgerSettings({ launchOnStartup: launchOnStartupInput.checked });
     render();
   });
 
   silentStartupInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({ silentStartup: silentStartupInput.checked });
+    ledger = await updateLedgerSettings({ silentStartup: silentStartupInput.checked });
     render();
   });
 
   proxyUrlInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({ proxyUrl: proxyUrlInput.value.trim() || undefined });
+    ledger = await updateLedgerSettings({ proxyUrl: proxyUrlInput.value.trim() || undefined });
     render();
   });
 
   updateCheckEnabledInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({ updateCheckEnabled: updateCheckEnabledInput.checked });
+    ledger = await updateLedgerSettings({ updateCheckEnabled: updateCheckEnabledInput.checked });
     render();
   });
 
@@ -1436,7 +1480,7 @@ function bindEvents() {
 
   cloudSyncAutoSyncInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({
+    ledger = await updateLedgerSettings({
       cloudSyncAutoSyncEnabled: cloudSyncAutoSyncInput.checked,
     });
     render();
@@ -1444,7 +1488,7 @@ function bindEvents() {
 
   leaderboardAutoSyncInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({
+    ledger = await updateLedgerSettings({
       leaderboardAutoSyncEnabled: leaderboardAutoSyncInput.checked,
     });
     render();
@@ -1452,7 +1496,7 @@ function bindEvents() {
 
   leaderboardPreferencesPublicInput?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({
+    ledger = await updateLedgerSettings({
       leaderboardPreferencesPublic: leaderboardPreferencesPublicInput.checked,
     });
     render();
@@ -1495,7 +1539,7 @@ function bindEvents() {
 
   badgeFrontMetricSelect?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({
+    ledger = await updateLedgerSettings({
       badgeFrontMetric: normalizeBadgeMetric(badgeFrontMetricSelect.value, "level"),
     });
     render();
@@ -1503,7 +1547,7 @@ function bindEvents() {
 
   badgeBackMetricSelect?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({
+    ledger = await updateLedgerSettings({
       badgeBackMetric: normalizeBadgeMetric(badgeBackMetricSelect.value, "total"),
     });
     render();
@@ -1511,7 +1555,7 @@ function bindEvents() {
 
   totalDisplayUnitSelect?.addEventListener("change", async () => {
     if (!ledger) return;
-    ledger = await window.bonsai.updateSettings({
+    ledger = await updateLedgerSettings({
       totalDisplayUnit: normalizeTotalDisplayUnit(totalDisplayUnitSelect.value),
     });
     render();
@@ -1861,8 +1905,14 @@ async function updatePathSetting(
 ) {
   if (!ledger) return;
   const value = input.value.trim() || undefined;
-  ledger = await window.bonsai.updateSettings({ [key]: value });
+  ledger = await updateLedgerSettings({ [key]: value });
   render();
+}
+
+async function updateLedgerSettings(partial: Partial<Settings>) {
+  if (!ledger) throw new Error("Ledger is not ready");
+  const settings = await window.bonsai.updateSettings(partial);
+  return { ...ledger, settings };
 }
 
 async function refreshLeaderboard(options: { syncFirst?: boolean; forceSync?: boolean; forceFetch?: boolean } = {}) {
@@ -2567,7 +2617,7 @@ async function joinLeaderboardWithPrompt() {
   });
   if (!confirmed.confirmed) return;
   if (ledger && confirmed.checked !== ledger.settings.leaderboardPreferencesPublic) {
-    ledger = await window.bonsai.updateSettings({
+    ledger = await updateLedgerSettings({
       leaderboardPreferencesPublic: confirmed.checked,
     });
     render();
@@ -2982,7 +3032,7 @@ function renderMenubarComponentSettings() {
 
 async function updateMenubarVizIds(next: MenubarVizId[]) {
   if (next.length === 0) return;
-  ledger = await window.bonsai.updateSettings({ menubarVizIds: next });
+  ledger = await updateLedgerSettings({ menubarVizIds: next });
   renderMenubarComponentSettings();
 }
 
@@ -3947,7 +3997,9 @@ function render() {
   }
   if (pendingLevelUp) triggerLevelUpAnimation(pendingLevelUp);
 
-  const achievementContext = viewMode === "toast" ? undefined : getAchievementContext(stats, visibility.enabled);
+  // Only the manager displays and persists achievement progress. Avoid a full
+  // history scan in the always-on pet and menu-bar renderers.
+  const achievementContext = viewMode === "manager" ? getAchievementContext(stats, visibility.enabled) : undefined;
   if (achievementContext) reconcileAchievementsIfNeeded(achievementContext);
 
   if (viewMode === "manager") {
@@ -5095,6 +5147,7 @@ function buildAchievementContext(stats: Stats, enabledSources = enabledStatsSour
   const dayHours = new Map<string, Set<number>>();
   const peakEvents: Array<{ time: number; xp: number }> = [];
   let hasFibonacciSession = false;
+  let totalEntries = 0;
 
   for (const entry of entries) {
     const xp = xpForEntry(entry, enabledSources);
@@ -5103,17 +5156,20 @@ function buildAchievementContext(stats: Stats, enabledSources = enabledStatsSour
     const createdAtMs = createdAt.getTime();
     if (!Number.isFinite(createdAtMs)) continue;
     countedEntries.push(entry);
-    peakEvents.push({ time: createdAtMs, xp });
+    const representedEvents = Math.max(1, Math.round(entry.eventCount ?? 1));
+    const isAggregate = representedEvents > 1 || entry.id.startsWith("cloud-bucket:");
+    totalEntries += representedEvents;
+    if (!isAggregate) peakEvents.push({ time: createdAtMs, xp });
     const key = dateKey(createdAt);
     const hour = createdAt.getHours();
     dayXp.set(key, (dayXp.get(key) ?? 0) + xp);
-    dayEntries.set(key, (dayEntries.get(key) ?? 0) + 1);
+    dayEntries.set(key, (dayEntries.get(key) ?? 0) + representedEvents);
     const hours = dayHours.get(key) ?? new Set<number>();
     hours.add(hour);
     dayHours.set(key, hours);
     hourSet.add(hour);
     hourKeys.add(Math.floor(createdAt.getTime() / 3_600_000));
-    if (isFibonacci(xp)) hasFibonacciSession = true;
+    if (!isAggregate && isFibonacci(xp)) hasFibonacciSession = true;
 
     const source = historySourceId(entry);
     if (source && source !== "cloud") {
@@ -5185,7 +5241,7 @@ function buildAchievementContext(stats: Stats, enabledSources = enabledStatsSour
     hasNoonPeak: hourSet.has(12),
     has5amTo9amStreak,
     longestInactiveDays,
-    totalEntries: countedEntries.length,
+    totalEntries,
     maxEntriesOneDay,
     hasHolidayCoding,
   };
@@ -6910,44 +6966,10 @@ function ledgerEntriesSignature() {
   if (ledgerEntriesSignatureCache?.entries === ledger.entries && ledgerEntriesSignatureCache.installedAt === ledger.installedAt) {
     return ledgerEntriesSignatureCache.signature;
   }
-  const first = ledger.entries[0];
-  const last = ledger.entries[ledger.entries.length - 1];
-  const totals = ledger.entries.reduce(
-    (acc, entry) => {
-      acc.tokens += entry.tokens;
-      acc.input += entry.inputTokens ?? 0;
-      acc.output += entry.outputTokens ?? 0;
-      acc.cacheRead += entry.cacheReadTokens ?? 0;
-      acc.cacheWrite += entry.cacheWriteTokens ?? 0;
-      const sourceKey = `${entry.source}:${entry.syncedFromCloud ? "1" : "0"}`;
-      acc.sources.set(sourceKey, (acc.sources.get(sourceKey) ?? 0) + 1);
-      return acc;
-    },
-    {
-      tokens: 0,
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      sources: new Map<string, number>(),
-    },
-  );
-  const signature = [
-    ledger.entries.length,
-    ledger.installedAt,
-    totals.tokens,
-    totals.input,
-    totals.output,
-    totals.cacheRead,
-    totals.cacheWrite,
-    [...totals.sources.entries()].sort(([left], [right]) => left.localeCompare(right)).join(","),
-    first?.id ?? "",
-    first?.createdAt ?? "",
-    first?.tokens ?? "",
-    last?.id ?? "",
-    last?.createdAt ?? "",
-    last?.tokens ?? "",
-  ].join(":");
+  // Each incoming snapshot/append creates a new array. Its identity is already
+  // an exact invalidation signal, so hashing every historical entry on every
+  // live update only adds an O(history) scan with no extra correctness.
+  const signature = `${++ledgerEntriesRevision}:${ledger.entries.length}:${ledger.installedAt}`;
   ledgerEntriesSignatureCache = {
     entries: ledger.entries,
     installedAt: ledger.installedAt,

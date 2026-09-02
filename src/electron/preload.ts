@@ -38,7 +38,7 @@ const api = {
   addEntry: (input: { tokens: number; note?: string }) =>
     ipcRenderer.invoke("ledger:add-entry", input) as Promise<LedgerFile>,
   updateSettings: (partial: Partial<Settings>) =>
-    ipcRenderer.invoke("settings:update", partial) as Promise<LedgerFile>,
+    ipcRenderer.invoke("settings:update", partial) as Promise<Settings>,
   setExpanded: (expanded: boolean) => ipcRenderer.invoke("window:set-expanded", expanded) as Promise<boolean>,
   getWindowBounds: () => ipcRenderer.invoke("window:get-bounds") as Promise<WindowBounds | null>,
   setWindowPosition: (position: { x: number; y: number }) =>
@@ -128,6 +128,24 @@ const api = {
     const listener = (_event: Electron.IpcRendererEvent, ledger: LedgerFile) => callback(ledger);
     ipcRenderer.on("bonsai:ledger", listener);
     return () => ipcRenderer.removeListener("bonsai:ledger", listener);
+  },
+  onLedgerAppend: (callback: (entries: LedgerFile["entries"]) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, entries: LedgerFile["entries"]) => callback(entries);
+    ipcRenderer.on("bonsai:ledger-append", listener);
+    return () => ipcRenderer.removeListener("bonsai:ledger-append", listener);
+  },
+  onLedgerPatch: (callback: (patch: { upserted: LedgerFile["entries"]; deletedIds: string[] }) => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      patch: { upserted: LedgerFile["entries"]; deletedIds: string[] },
+    ) => callback(patch);
+    ipcRenderer.on("bonsai:ledger-patch", listener);
+    return () => ipcRenderer.removeListener("bonsai:ledger-patch", listener);
+  },
+  onSettings: (callback: (settings: Settings) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, settings: Settings) => callback(settings);
+    ipcRenderer.on("bonsai:settings", listener);
+    return () => ipcRenderer.removeListener("bonsai:settings", listener);
   },
   onExpanded: (callback: (expanded: boolean) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, expanded: boolean) => callback(expanded);
