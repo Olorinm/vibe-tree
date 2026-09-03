@@ -6,7 +6,7 @@ Cloudflare Worker + D1 backend for three opt-in cloud features:
 - Optional global leaderboard publishing.
 - Friends and groups, including group-specific contribution leaderboards.
 
-The desktop app never uploads prompts, replies, code files, local paths, session text, raw notes, or per-event model/provider labels. Shared tree sync sends token ledger events with safe source categories, device id, achievement unlock state, coarse device summaries, and daily aggregate model totals grouped by device/source/model. Leaderboard and group sync send daily token totals, recent hourly token aggregates, and the local first-use date; if a user explicitly enables public usage preferences, it also sends range-scoped aggregate preferences only: top agent percentage, top model, preferred coding period, and peak token/min.
+The desktop app never uploads prompts, replies, code files, local paths, session text, or raw notes. Shared tree sync sends replaceable hourly usage buckets grouped by device/source/model, achievement unlock state, and coarse device summaries. It does not upload individual usage events. Leaderboard and group sync send daily token totals, recent hourly token aggregates, and the local first-use date; if a user explicitly enables public usage preferences, it also sends range-scoped aggregate preferences only: top agent percentage, top model, preferred coding period, and peak token/min.
 
 The first release is community-oriented, not strict cheat-proof scoring. The backend keeps only broad safety rails:
 
@@ -38,9 +38,11 @@ The Worker rate-limit binding only supports 10-second or 60-second windows, so h
 
 ### Shared Tree Sync
 
-- `GET /api/tree` returns cloud tree events, achievements, device summaries, aggregate model stats, and a summary with `hasRemoteTree`.
-- `POST /api/tree/events` upserts token events, refreshes the current device snapshot, and replaces that device's aggregate model stats when provided.
+- `GET /api/tree` returns paginated hourly usage buckets, achievements, device summaries, legacy aggregate model stats, and a summary with `hasRemoteTree`.
+- `POST /api/tree/events` upserts changed hourly usage buckets and the current device's absolute summary. Protocol-v2 clients never write raw events; protocol-v1 payloads remain incrementally compatible during rollout, without the former full-table dedupe/stat scans.
 - `POST /api/tree/achievements` upserts achievement unlock state.
+
+Before deploying the Worker version that reads usage buckets, run `npm run db:migrate:cloud-buckets`. The migration creates the bucket/tombstone tables and performs a one-time aggregation of existing `tree_events`; it leaves the raw table in place for rollback. Upgraded clients replace those compatibility buckets with model-aware v2 buckets, and tombstones prevent duplicate history on devices that already pulled the compatibility rows.
 
 Remote tree existence is true when the account has any tree events, achievements, device snapshots, or aggregate model stats. This lets a second device join a tree that was just enabled on the first device before any token was produced.
 

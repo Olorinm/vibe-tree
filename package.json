@@ -19,6 +19,7 @@
     "test:mac-package": "node scripts/test-macos-package.mjs",
     "test:mac-start": "node scripts/test-macos-start.mjs",
     "verify:cloud-sync": "node scripts/verify-cloud-sync.mjs",
+    "verify:renderer-ledger": "npm run build && node scripts/verify-renderer-ledger.mjs",
     "verify:worker-api": "node server/leaderboard-worker/scripts/verify-worker-api.mjs",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.json --noEmit",
     "start": "node scripts/start.mjs"

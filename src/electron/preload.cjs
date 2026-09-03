@@ -69,6 +69,21 @@ const api = {
     ipcRenderer.on("bonsai:ledger", listener);
     return () => ipcRenderer.removeListener("bonsai:ledger", listener);
   },
+  onLedgerAppend: (callback) => {
+    const listener = (_event, entries) => callback(entries);
+    ipcRenderer.on("bonsai:ledger-append", listener);
+    return () => ipcRenderer.removeListener("bonsai:ledger-append", listener);
+  },
+  onLedgerPatch: (callback) => {
+    const listener = (_event, patch) => callback(patch);
+    ipcRenderer.on("bonsai:ledger-patch", listener);
+    return () => ipcRenderer.removeListener("bonsai:ledger-patch", listener);
+  },
+  onSettings: (callback) => {
+    const listener = (_event, settings) => callback(settings);
+    ipcRenderer.on("bonsai:settings", listener);
+    return () => ipcRenderer.removeListener("bonsai:settings", listener);
+  },
   onExpanded: (callback) => {
     const listener = (_event, expanded) => callback(expanded);
     ipcRenderer.on("bonsai:expanded", listener);

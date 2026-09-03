@@ -1,9 +1,23 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, screen, session, shell, Tray } from "electron";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { spawn } from "node:child_process";
 import * as https from "node:https";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { deserialize, serialize } from "node:v8";
 import type { MenuItemConstructorOptions } from "electron";
 import type {
   AchievementState,
@@ -11,11 +25,14 @@ import type {
   AchievementUnlockResult,
   AppLanguage,
   CloudModelStat,
+  CloudUsageBucket,
+  CloudUsageSnapshot,
   CloudSyncStatus,
   LedgerEntry,
   LedgerFile,
   LeaderboardCollection,
   LeaderboardProfile,
+  RendererLedgerView,
   Settings,
   ToastPlacement,
   TreeToastItem,
@@ -44,6 +61,7 @@ import { levelProgressForXp, VIBE_TREE_LEVEL_CURVE } from "../shared/leveling.js
 import { SOCIAL_FEATURE_ENABLED } from "../shared/features.js";
 import { APP_ID, APP_NAME, MAC_TRAY_GUID } from "../shared/appMetadata.js";
 import { shouldHandoffToMacApp } from "../shared/macAppHandoff.js";
+import { ledgerForRenderer } from "./rendererLedger.js";
 
 const PET_BASE = { width: 192, height: 208 };
 const PET_STAGE_OFFSET = { x: 28, y: 0 };
@@ -62,6 +80,7 @@ const UPDATE_NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const UPDATE_BUILD_TIMEOUT_MS = 3 * 60 * 1000;
 const UPDATE_SMOKE_TIMEOUT_MS = 45_000;
 const LEDGER_BROADCAST_DEBOUNCE_MS = 250;
+const USAGE_ENTRIES_CACHE_VERSION = 1;
 const UPDATE_LATEST_RELEASE_URL = "https://api.github.com/repos/open-grove/vibe-tree/releases/latest";
 const UPDATE_TAGS_URL = "https://api.github.com/repos/open-grove/vibe-tree/tags?per_page=20";
 const UPDATE_PAGE_URL = "https://github.com/open-grove/vibe-tree/releases";
@@ -168,8 +187,16 @@ let macMenuBarHelperBuffer = "";
 let lastMacMenuBarPoint: Electron.Point | null = null;
 let isQuitting = false;
 let ledgerBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingLedgerBroadcastEntries: LedgerEntry[] = [];
+let rendererEntriesSinceCompaction = 0;
 let ledger: LedgerFile = { entries: [], settings: DEFAULT_SETTINGS, installedAt: startOfLocalDayIso(new Date()) };
+let trayStatsBaseCache:
+  | { todayKey: string; enabledKey: string; totalXp: number; todayXp: number; entriesBySource: Map<string, number> }
+  | undefined;
 let ledgerEntryIds = new Set<string>();
+let cloudUsageSnapshotCache:
+  | { entries: LedgerEntry[]; length: number; firstId?: string; firstTokens?: number; deviceId: string; snapshot: CloudUsageSnapshot }
+  | undefined;
 let pendingUsageEntries: LedgerEntry[] = [];
 let pendingUsageFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let achievementState: AchievementState = { unlocked: [] };
@@ -270,6 +297,7 @@ const leaderboardService = createLeaderboardService({
   deviceId: () => ensureCloudSyncDeviceId(),
   deviceInfo: () => cloudSyncDeviceInfo(),
   cloudModelStats: () => cloudModelStats(),
+  cloudUsageSnapshot: () => cloudUsageSnapshot(),
   getLedger: () => ledger,
   updateSettings,
   appendRemoteEntries,
@@ -292,6 +320,10 @@ function ledgerPath() {
 
 function usageEventsPath() {
   return join(app.getPath("userData"), "usage-events.jsonl");
+}
+
+function usageEntriesCachePath() {
+  return join(app.getPath("userData"), "usage-events.cache-v1");
 }
 
 function usageMetaPath() {
@@ -439,8 +471,10 @@ function setTreeStartMode(mode: "new" | "cloud") {
   ledger.entries = ledger.entries.filter((entry) =>
     mode === "cloud" ? entryBelongsToCurrentTree(entry, installedAt) : entryTime(entry) >= Date.parse(installedAt),
   );
+  trayStatsBaseCache = undefined;
   resetLedgerEntryIds();
   updateSettings({ treeStartMode: mode });
+  broadcastLedgerNow();
 }
 
 function readLegacyLedger(): Partial<LedgerFile> | undefined {
@@ -770,7 +804,16 @@ function readUsageEntries() {
   if (!existsSync(usageEventsPath())) return [];
   const byId = new Map<string, LedgerEntry>();
   let parsedCount = 0;
-  const raw = readFileSync(usageEventsPath(), "utf8");
+  const sourceStats = statSync(usageEventsPath());
+  const cached = readUsageEntriesCache(sourceStats.size);
+  for (const entry of cached?.entries ?? []) {
+    if (!isEntry(entry)) continue;
+    parsedCount += 1;
+    byId.set(entry.id, entry);
+  }
+  const raw = cached
+    ? readUtf8FileTail(usageEventsPath(), cached.sourceSize, sourceStats.size)
+    : readFileSync(usageEventsPath(), "utf8");
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const parsed = parseJson(line);
@@ -780,8 +823,63 @@ function readUsageEntries() {
     }
   }
   const entries = [...byId.values()].sort((a, b) => entryTime(b) - entryTime(a));
+  const shouldRefreshCache = !cached || raw.length > 0 || parsedCount > entries.length;
   if (parsedCount > entries.length) rewriteUsageEntriesStore(entries);
+  if (shouldRefreshCache && (sourceStats.size === 0 || raw.endsWith("\n"))) writeUsageEntriesCache(entries);
   return entries;
+}
+
+interface UsageEntriesCache {
+  version: number;
+  sourceSize: number;
+  entries: LedgerEntry[];
+}
+
+function readUsageEntriesCache(sourceSize: number): UsageEntriesCache | undefined {
+  try {
+    const cached = deserialize(readFileSync(usageEntriesCachePath())) as Partial<UsageEntriesCache>;
+    if (cached.version !== USAGE_ENTRIES_CACHE_VERSION) return undefined;
+    if (!Number.isFinite(cached.sourceSize) || (cached.sourceSize ?? -1) < 0 || (cached.sourceSize ?? 0) > sourceSize) {
+      return undefined;
+    }
+    if (!Array.isArray(cached.entries)) return undefined;
+    return cached as UsageEntriesCache;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeUsageEntriesCache(entries: LedgerEntry[]) {
+  try {
+    const sourceSize = statSync(usageEventsPath()).size;
+    const path = usageEntriesCachePath();
+    const tempPath = `${path}.${process.pid}.tmp`;
+    writeFileSync(
+      tempPath,
+      serialize({ version: USAGE_ENTRIES_CACHE_VERSION, sourceSize, entries } satisfies UsageEntriesCache),
+    );
+    renameSync(tempPath, path);
+  } catch {
+    // JSONL remains authoritative; a cache failure only affects startup time.
+  }
+}
+
+function readUtf8FileTail(path: string, start: number, end: number) {
+  const length = Math.max(0, end - start);
+  if (!length) return "";
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const bytesRead = readSync(fd, buffer, offset, length - offset, start + offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    return buffer.subarray(0, offset).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function appendUsageEntryToStore(entry: LedgerEntry) {
@@ -797,6 +895,7 @@ function rewriteUsageEntriesStore(entries: LedgerEntry[]) {
   const content = entries.map((entry) => JSON.stringify(entry)).join("\n");
   writeFileSync(tempPath, content ? `${content}\n` : "", "utf8");
   renameSync(tempPath, path);
+  rmSync(usageEntriesCachePath(), { force: true });
 }
 
 function writeJsonAtomic(path: string, value: unknown) {
@@ -1599,39 +1698,39 @@ function refreshTrayMenu() {
       : []),
     { type: "separator" },
     {
-      label: sourceStatusLabel("Codex", codexSessionStatus, "codex-session"),
+      label: sourceStatusLabel("Codex", codexSessionStatus, trayStats.entriesBySource.get("codex-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("Claude Code", claudeSessionStatus, "claude-session"),
+      label: sourceStatusLabel("Claude Code", claudeSessionStatus, trayStats.entriesBySource.get("claude-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("OpenClaw", openclawSessionStatus, "openclaw-session"),
+      label: sourceStatusLabel("OpenClaw", openclawSessionStatus, trayStats.entriesBySource.get("openclaw-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("Pi Agent", piSessionStatus, "pi-session"),
+      label: sourceStatusLabel("Pi Agent", piSessionStatus, trayStats.entriesBySource.get("pi-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("OpenCode", opencodeSessionStatus, "opencode-session"),
+      label: sourceStatusLabel("OpenCode", opencodeSessionStatus, trayStats.entriesBySource.get("opencode-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("Gemini", geminiSessionStatus, "gemini-session"),
+      label: sourceStatusLabel("Gemini", geminiSessionStatus, trayStats.entriesBySource.get("gemini-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("Hermes", hermesSessionStatus, "hermes-session"),
+      label: sourceStatusLabel("Hermes", hermesSessionStatus, trayStats.entriesBySource.get("hermes-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("Kimi Code", kimiSessionStatus, "kimi-session"),
+      label: sourceStatusLabel("Kimi Code", kimiSessionStatus, trayStats.entriesBySource.get("kimi-session") ?? 0),
       enabled: false,
     },
     {
-      label: sourceStatusLabel("DeepSeek Harness", deepseekSessionStatus, "deepseek-session"),
+      label: sourceStatusLabel("DeepSeek Harness", deepseekSessionStatus, trayStats.entriesBySource.get("deepseek-session") ?? 0),
       enabled: false,
     },
     { type: "separator" },
@@ -1708,15 +1807,18 @@ function reopenTrayMenuSoon(delayMs = 120) {
 
 function getTrayStats() {
   const now = Date.now();
-  const totalXp = ledger.entries.reduce((total, entry) => total + xpForEntry(entry), 0);
   const todayKey = dateKey(new Date());
-  const todayXp = ledger.entries
-    .filter((entry) => dateKey(new Date(entry.createdAt)) === todayKey)
-    .reduce((total, entry) => total + xpForEntry(entry), 0);
-  const recentXp = ledger.entries
-    .filter((entry) => now - entryTime(entry) <= 60_000)
-    .reduce((total, entry) => total + xpForEntry(entry), 0);
-  const xpPerMinute = recentXp;
+  const enabledKey = ledger.settings.enabledSourceIds.join(",");
+  if (!trayStatsBaseCache || trayStatsBaseCache.todayKey !== todayKey || trayStatsBaseCache.enabledKey !== enabledKey) {
+    trayStatsBaseCache = buildTrayStatsBase(todayKey, enabledKey, ledger.entries);
+  }
+  let xpPerMinute = 0;
+  for (const entry of ledger.entries) {
+    const createdAt = entryTime(entry);
+    if (now - createdAt > 60_000) break;
+    xpPerMinute += xpForEntry(entry);
+  }
+  const { totalXp, todayXp, entriesBySource } = trayStatsBaseCache;
   const weather = WEATHER_THRESHOLDS.reduce((current, candidate) => {
     return xpPerMinute >= candidate.minXpPerMinute ? candidate : current;
   }, WEATHER_THRESHOLDS[0]);
@@ -1727,11 +1829,46 @@ function getTrayStats() {
     todayXp,
     xpPerMinute,
     weatherLabel: weatherLabel(weather.id),
+    entriesBySource,
   };
 }
 
-function sourceStatusLabel(label: string, status: UsageStatus["codexSession"], source: string) {
-  const entries = ledger.entries.filter((entry) => entry.source === source);
+function buildTrayStatsBase(todayKey: string, enabledKey: string, entries: LedgerEntry[]) {
+  const entriesBySource = new Map<string, number>();
+  let totalXp = 0;
+  let todayXp = 0;
+  for (const entry of entries) {
+    const xp = xpForEntry(entry);
+    totalXp += xp;
+    if (dateKey(new Date(entryTime(entry))) === todayKey) todayXp += xp;
+    entriesBySource.set(
+      entry.source,
+      (entriesBySource.get(entry.source) ?? 0) + Math.max(1, Math.round(entry.eventCount ?? 1)),
+    );
+  }
+  return { todayKey, enabledKey, totalXp, todayXp, entriesBySource };
+}
+
+function appendTrayStats(entries: LedgerEntry[]) {
+  if (!trayStatsBaseCache) return;
+  const todayKey = dateKey(new Date());
+  const enabledKey = ledger.settings.enabledSourceIds.join(",");
+  if (trayStatsBaseCache.todayKey !== todayKey || trayStatsBaseCache.enabledKey !== enabledKey) {
+    trayStatsBaseCache = undefined;
+    return;
+  }
+  for (const entry of entries) {
+    const xp = xpForEntry(entry);
+    trayStatsBaseCache.totalXp += xp;
+    if (dateKey(new Date(entryTime(entry))) === todayKey) trayStatsBaseCache.todayXp += xp;
+    trayStatsBaseCache.entriesBySource.set(
+      entry.source,
+      (trayStatsBaseCache.entriesBySource.get(entry.source) ?? 0) + Math.max(1, Math.round(entry.eventCount ?? 1)),
+    );
+  }
+}
+
+function sourceStatusLabel(label: string, status: UsageStatus["codexSession"], entryCount: number) {
   const state =
     status.exists && status.running
       ? mainText("sourceWatching")
@@ -1740,7 +1877,7 @@ function sourceStatusLabel(label: string, status: UsageStatus["codexSession"], s
         : mainText("sourceStopped");
   const eventText = status.lastEventAt ? ` · ${formatRelativeTime(status.lastEventAt)}` : "";
   const entriesUnit = currentLanguage() === "zh-CN" ? "条" : "entries";
-  return `${label}: ${state} · ${status.filesWatched} ${mainText("files")} · ${entries.length} ${entriesUnit}${eventText}`;
+  return `${label}: ${state} · ${status.filesWatched} ${mainText("files")} · ${entryCount} ${entriesUnit}${eventText}`;
 }
 
 function xpForEntry(entry: LedgerEntry) {
@@ -1811,6 +1948,9 @@ function formatRelativeTime(isoTime: string) {
 function updateSettings(partial: Partial<Settings>) {
   const previous = ledger.settings;
   ledger.settings = normalizeSettings({ ...ledger.settings, ...partial });
+  if (previous.enabledSourceIds.join(",") !== ledger.settings.enabledSourceIds.join(",")) {
+    trayStatsBaseCache = undefined;
+  }
   petWindow?.setAlwaysOnTop(ledger.settings.alwaysOnTop, "floating");
   if (previous.uiTheme !== ledger.settings.uiTheme) applyManagerWindowChrome();
   if (partial.scale !== undefined) resizePetWindow();
@@ -1859,7 +1999,7 @@ function updateSettings(partial: Partial<Settings>) {
   ) {
     restartUsageWatchers();
   }
-  broadcastLedgerNow();
+  broadcast("bonsai:settings", ledger.settings);
 }
 
 function ensureCloudSyncDeviceId() {
@@ -1895,14 +2035,12 @@ function cloudDevicePlatformLabel() {
 function cloudModelStats(): CloudModelStat[] {
   const deviceId = ensureCloudSyncDeviceId();
   const rows = new Map<string, CloudModelStat>();
-  for (const entry of ledger.entries) {
-    const model = cleanCloudModelLabel(entry.model) ?? cleanCloudModelLabel(entry.provider);
+  for (const bucket of cloudUsageSnapshot().buckets) {
+    const model = cleanCloudModelLabel(bucket.model);
     if (!model) continue;
-    if (entryIsKnownRemoteCloudMirror(entry, deviceId)) continue;
-    const createdAt = new Date(entry.createdAt);
+    const createdAt = new Date(bucket.startedAt);
     if (!Number.isFinite(createdAt.getTime())) continue;
-    const source = normalizeCloudEventSource(entry.source, entry.id);
-    if (source === "cloud-sync") continue;
+    const source = normalizeCloudEventSource(bucket.source, bucket.id);
     const date = dateKey(createdAt);
     const key = `${deviceId}|${date}|${source}|${model}`;
     const existing =
@@ -1918,11 +2056,11 @@ function cloudModelStats(): CloudModelStat[] {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
       };
-    existing.tokens += countedTokensForEntry(entry);
-    existing.inputTokens = (existing.inputTokens ?? 0) + countedInputTokensForEntry(entry);
-    existing.outputTokens = (existing.outputTokens ?? 0) + safeTokens(entry.outputTokens ?? 0);
-    existing.cacheReadTokens = (existing.cacheReadTokens ?? 0) + safeTokens(entry.cacheReadTokens ?? 0);
-    existing.cacheWriteTokens = (existing.cacheWriteTokens ?? 0) + safeTokens(entry.cacheWriteTokens ?? 0);
+    existing.tokens += bucket.tokens;
+    existing.inputTokens = (existing.inputTokens ?? 0) + safeTokens(bucket.inputTokens ?? 0);
+    existing.outputTokens = (existing.outputTokens ?? 0) + safeTokens(bucket.outputTokens ?? 0);
+    existing.cacheReadTokens = (existing.cacheReadTokens ?? 0) + safeTokens(bucket.cacheReadTokens ?? 0);
+    existing.cacheWriteTokens = (existing.cacheWriteTokens ?? 0) + safeTokens(bucket.cacheWriteTokens ?? 0);
     rows.set(key, existing);
   }
   return [...rows.values()].filter((row) => row.tokens > 0).sort((a, b) => {
@@ -1931,6 +2069,90 @@ function cloudModelStats(): CloudModelStat[] {
     const sourceOrder = a.source.localeCompare(b.source);
     return sourceOrder || a.model.localeCompare(b.model);
   });
+}
+
+function cloudUsageSnapshot(): CloudUsageSnapshot {
+  const deviceId = ensureCloudSyncDeviceId();
+  const first = ledger.entries[0];
+  if (
+    cloudUsageSnapshotCache?.entries === ledger.entries &&
+    cloudUsageSnapshotCache.length === ledger.entries.length &&
+    cloudUsageSnapshotCache.firstId === first?.id &&
+    cloudUsageSnapshotCache.firstTokens === first?.tokens &&
+    cloudUsageSnapshotCache.deviceId === deviceId
+  ) {
+    return cloudUsageSnapshotCache.snapshot;
+  }
+  const rows = new Map<string, CloudUsageBucket>();
+  const seenFingerprints = new Set<string>();
+  const remoteFingerprints = new Set(
+    ledger.entries
+      .filter((entry) => entryIsKnownRemoteCloudMirror(entry, deviceId))
+      .map(cloudMirrorDedupeKey)
+      .filter((value): value is string => Boolean(value)),
+  );
+  let entryCount = 0;
+  let tokens = 0;
+
+  for (const entry of ledger.entries) {
+    if (entryIsKnownRemoteCloudMirror(entry, deviceId)) continue;
+    const fingerprint = cloudMirrorDedupeKey(entry);
+    if (fingerprint && remoteFingerprints.has(fingerprint)) continue;
+    if (fingerprint && seenFingerprints.has(fingerprint)) continue;
+    if (fingerprint) seenFingerprints.add(fingerprint);
+    const createdAtMs = Date.parse(entry.createdAt);
+    if (!Number.isFinite(createdAtMs)) continue;
+    const source = normalizeCloudEventSource(entry.source, entry.id);
+    if (source === "cloud-sync") continue;
+    const countedTokens = countedTokensForEntry(entry);
+    if (countedTokens <= 0) continue;
+    const startedAt = new Date(Math.floor(createdAtMs / 3_600_000) * 3_600_000).toISOString();
+    const model = cleanCloudModelLabel(entry.model) ?? cleanCloudModelLabel(entry.provider);
+    const identity = [startedAt, source, model ?? ""].join("\u0000");
+    const id = `hour-v2-${createHash("sha256").update(identity).digest("hex").slice(0, 32)}`;
+    const representedEvents = Math.max(1, Math.round(entry.eventCount ?? 1));
+    const existing = rows.get(identity) ?? {
+      id,
+      startedAt,
+      source,
+      model,
+      tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      eventCount: 0,
+    };
+    existing.tokens += countedTokens;
+    existing.inputTokens = (existing.inputTokens ?? 0) + countedInputTokensForEntry(entry);
+    existing.outputTokens = (existing.outputTokens ?? 0) + safeTokens(entry.outputTokens ?? 0);
+    existing.cacheReadTokens = (existing.cacheReadTokens ?? 0) + safeTokens(entry.cacheReadTokens ?? 0);
+    existing.cacheWriteTokens = (existing.cacheWriteTokens ?? 0) + safeTokens(entry.cacheWriteTokens ?? 0);
+    existing.eventCount += representedEvents;
+    rows.set(identity, existing);
+    entryCount += representedEvents;
+    tokens += countedTokens;
+  }
+
+  const snapshot = {
+    buckets: [...rows.values()].sort((left, right) => {
+      const timeOrder = left.startedAt.localeCompare(right.startedAt);
+      if (timeOrder) return timeOrder;
+      const sourceOrder = left.source.localeCompare(right.source);
+      return sourceOrder || (left.model ?? "").localeCompare(right.model ?? "");
+    }),
+    entryCount,
+    tokens,
+  };
+  cloudUsageSnapshotCache = {
+    entries: ledger.entries,
+    length: ledger.entries.length,
+    firstId: first?.id,
+    firstTokens: first?.tokens,
+    deviceId,
+    snapshot,
+  };
+  return snapshot;
 }
 
 function entryIsKnownRemoteCloudMirror(entry: LedgerEntry, currentDeviceId: string) {
@@ -1960,8 +2182,9 @@ function flushPendingUsageEntries() {
 
   const entries = pendingUsageEntries;
   pendingUsageEntries = [];
+  appendTrayStats(entries);
   ledger.entries = entries.reverse().concat(ledger.entries);
-  scheduleLedgerBroadcast();
+  scheduleLedgerBroadcast(entries);
   leaderboardService.scheduleCloudSyncSoon();
 }
 
@@ -1990,8 +2213,25 @@ function appendUsageEvent(event: UsageEvent) {
   schedulePendingUsageFlush();
 }
 
-function appendRemoteEntries(entries: LedgerEntry[]) {
+function appendRemoteEntries(entries: LedgerEntry[], deletedEntryIds: string[] = []) {
   flushPendingUsageEntries();
+  trayStatsBaseCache = undefined;
+  const deletedIds = new Set(deletedEntryIds);
+  const replacementCoverage = new Set(
+    entries
+      .filter((entry) => entry.id.includes(":hour-v2-"))
+      .map(remoteUsageCoverageKey)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const beforeReplacement = ledger.entries.length;
+  ledger.entries = ledger.entries.filter((entry) => {
+    if (deletedIds.has(entry.id)) return false;
+    if (!entry.syncedFromCloud && entry.source !== "cloud-sync") return true;
+    if (entry.id.includes(":hour-v2-")) return true;
+    const coverage = remoteUsageCoverageKey(entry);
+    return !coverage || !replacementCoverage.has(coverage);
+  });
+  const removedBeforeMerge = beforeReplacement - ledger.entries.length;
   const existingById = new Map(ledger.entries.map((entry) => [entry.id, entry]));
   const existingByFingerprint = new Map<string, LedgerEntry>();
   for (const entry of ledger.entries) {
@@ -2035,21 +2275,39 @@ function appendRemoteEntries(entries: LedgerEntry[]) {
   }
   if (!accepted.length && !repaired.length) {
     const deduped = dedupeCloudMirroredEntries(ledger.entries);
-    if (!deduped.removedCount) return 0;
+    if (!deduped.removedCount && !removedBeforeMerge) return 0;
     ledger.entries = deduped.entries;
     resetLedgerEntryIds();
     rewriteUsageEntriesStore(ledger.entries);
     broadcastLedgerNow();
-    return deduped.removedCount;
+    return removedBeforeMerge + deduped.removedCount;
+  }
+  if (!accepted.length && repaired.length === 1 && !removedBeforeMerge) {
+    const replacement = repaired[0];
+    const index = ledger.entries.findIndex((entry) => entry.id === replacement.id);
+    if (index >= 0) {
+      ledger.entries = ledger.entries.slice();
+      ledger.entries[index] = replacement;
+      broadcastLedgerPatch([replacement]);
+      return 1;
+    }
   }
   const repairedIds = new Set(repaired.map((entry) => entry.id));
   const kept = ledger.entries.filter((entry) => !repairedIds.has(entry.id));
   const deduped = dedupeCloudMirroredEntries([...accepted, ...repaired, ...kept]);
   ledger.entries = deduped.entries;
   resetLedgerEntryIds();
-  if (repaired.length || deduped.removedCount) rewriteUsageEntriesStore(ledger.entries);
+  if (repaired.length || removedBeforeMerge || deduped.removedCount) rewriteUsageEntriesStore(ledger.entries);
   broadcastLedgerNow();
-  return accepted.length + repaired.length + deduped.removedCount;
+  return accepted.length + repaired.length + removedBeforeMerge + deduped.removedCount;
+}
+
+function remoteUsageCoverageKey(entry: LedgerEntry) {
+  if (!entry.deviceId) return undefined;
+  const createdAt = Date.parse(entry.createdAt);
+  if (!Number.isFinite(createdAt)) return undefined;
+  const hour = new Date(Math.floor(createdAt / 3_600_000) * 3_600_000).toISOString();
+  return `${entry.deviceId}|${hour}|${normalizeCloudEventSource(entry.source, entry.id)}`;
 }
 
 function normalizeRemoteEntry(entry: LedgerEntry): LedgerEntry {
@@ -2172,7 +2430,11 @@ function mergeCloudMirrorDuplicate(preferred: LedgerEntry, secondary: LedgerEntr
     outputTokens: preferred.outputTokens ?? secondary.outputTokens,
     cacheReadTokens: preferred.cacheReadTokens ?? secondary.cacheReadTokens,
     cacheWriteTokens: preferred.cacheWriteTokens ?? secondary.cacheWriteTokens,
-    deviceId: preferred.deviceId ?? secondary.deviceId,
+    deviceId:
+      (secondary.syncedFromCloud || secondary.source === "cloud-sync" ? secondary.deviceId : undefined) ??
+      (preferred.syncedFromCloud || preferred.source === "cloud-sync" ? preferred.deviceId : undefined) ??
+      preferred.deviceId ??
+      secondary.deviceId,
     syncedFromCloud: preferred.syncedFromCloud || secondary.syncedFromCloud || secondary.source === "cloud-sync" || undefined,
     eventFingerprint,
   };
@@ -2292,21 +2554,58 @@ function broadcast(channel: string, ...args: unknown[]) {
   }
 }
 
+function rendererViewForSender(sender: Electron.WebContents): RendererLedgerView {
+  if (sender === petWindow?.webContents) return "pet";
+  if (sender === menuBarWindow?.webContents) return "menubar";
+  if (sender === achievementToastWindow?.webContents) return "toast";
+  return "manager";
+}
+
 function broadcastLedgerNow() {
   if (ledgerBroadcastTimer) {
     clearTimeout(ledgerBroadcastTimer);
     ledgerBroadcastTimer = null;
   }
   refreshTrayMenu();
-  broadcast("bonsai:ledger", ledger);
+  sendLedgerSnapshot(petWindow, "pet");
+  sendLedgerSnapshot(managerWindow, "manager");
+  sendLedgerSnapshot(menuBarWindow, "menubar");
+  sendLedgerSnapshot(achievementToastWindow, "toast");
+  rendererEntriesSinceCompaction = 0;
 }
 
-function scheduleLedgerBroadcast() {
+function broadcastLedgerPatch(upserted: LedgerEntry[], deletedIds: string[] = []) {
+  if (managerWindow && !managerWindow.isDestroyed()) {
+    managerWindow.webContents.send("bonsai:ledger-patch", { upserted, deletedIds });
+  }
+  sendLedgerSnapshot(petWindow, "pet");
+  sendLedgerSnapshot(menuBarWindow, "menubar");
+  refreshTrayMenu();
+}
+
+function sendLedgerSnapshot(window: BrowserWindow | null, view: RendererLedgerView) {
+  if (!window || window.isDestroyed()) return;
+  window.webContents.send("bonsai:ledger", ledgerForRenderer(ledger, view));
+}
+
+function scheduleLedgerBroadcast(entries: LedgerEntry[]) {
+  pendingLedgerBroadcastEntries.push(...entries);
   if (ledgerBroadcastTimer) return;
   ledgerBroadcastTimer = setTimeout(() => {
     ledgerBroadcastTimer = null;
+    const appended = pendingLedgerBroadcastEntries;
+    pendingLedgerBroadcastEntries = [];
     refreshTrayMenu();
-    broadcast("bonsai:ledger", ledger);
+    for (const window of [petWindow, managerWindow, menuBarWindow]) {
+      if (!window || window.isDestroyed()) continue;
+      window.webContents.send("bonsai:ledger-append", appended);
+    }
+    rendererEntriesSinceCompaction += appended.length;
+    if (rendererEntriesSinceCompaction >= 2_000) {
+      sendLedgerSnapshot(petWindow, "pet");
+      sendLedgerSnapshot(menuBarWindow, "menubar");
+      rendererEntriesSinceCompaction = 0;
+    }
   }, LEDGER_BROADCAST_DEBOUNCE_MS);
 }
 
@@ -3259,7 +3558,7 @@ app.on("before-quit", () => {
   leaderboardService.stop();
 });
 
-ipcMain.handle("ledger:get", () => ledger);
+ipcMain.handle("ledger:get", (event) => ledgerForRenderer(ledger, rendererViewForSender(event.sender)));
 ipcMain.handle("usage:get-status", getUsageStatus);
 ipcMain.handle("updates:get-status", () => updateStatus);
 ipcMain.handle("updates:check", () => checkForUpdates({ manual: true }));
@@ -3429,9 +3728,9 @@ ipcMain.on("level:toast", (_event, input: { from?: unknown; to?: unknown }) => {
   showLevelToastOverlay(input);
 });
 
-ipcMain.handle("ledger:add-entry", (_event, input: { tokens: number; note?: string }) => {
+ipcMain.handle("ledger:add-entry", (event, input: { tokens: number; note?: string }) => {
   const tokens = Math.max(0, Math.round(Number(input.tokens)));
-  if (!tokens) return ledger;
+  if (!tokens) return ledgerForRenderer(ledger, rendererViewForSender(event.sender));
 
   const entry: LedgerEntry = {
     id: crypto.randomUUID(),
@@ -3440,16 +3739,17 @@ ipcMain.handle("ledger:add-entry", (_event, input: { tokens: number; note?: stri
     tokens,
     note: input.note?.trim() || undefined,
   };
+  appendTrayStats([entry]);
   ledger.entries.unshift(entry);
   ledgerEntryIds.add(entry.id);
   appendUsageEntryToStore(entry);
   broadcastLedgerNow();
-  return ledger;
+  return ledgerForRenderer(ledger, rendererViewForSender(event.sender));
 });
 
 ipcMain.handle("settings:update", (_event, partial: Partial<Settings>) => {
   updateSettings(partial);
-  return ledger;
+  return ledger.settings;
 });
 
 ipcMain.on("manager:ready", (event) => {

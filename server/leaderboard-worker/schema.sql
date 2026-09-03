@@ -111,6 +111,34 @@ CREATE TABLE IF NOT EXISTS tree_model_stats (
   FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS tree_usage_buckets (
+  user_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  bucket_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  source TEXT NOT NULL,
+  model TEXT,
+  tokens INTEGER NOT NULL,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER,
+  event_count INTEGER NOT NULL DEFAULT 1,
+  app_version TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, device_id, bucket_id),
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS tree_usage_bucket_tombstones (
+  user_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  bucket_id TEXT NOT NULL,
+  deleted_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, device_id, bucket_id),
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS usage_preferences (
   user_id TEXT NOT NULL,
   range TEXT NOT NULL,
@@ -275,6 +303,9 @@ CREATE INDEX IF NOT EXISTS idx_tree_device_stats_user_updated ON tree_device_sta
 CREATE INDEX IF NOT EXISTS idx_tree_model_stats_user ON tree_model_stats(user_id);
 CREATE INDEX IF NOT EXISTS idx_tree_model_stats_device ON tree_model_stats(user_id, device_id);
 CREATE INDEX IF NOT EXISTS idx_tree_model_stats_user_updated ON tree_model_stats(user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tree_usage_buckets_user_started ON tree_usage_buckets(user_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_tree_usage_buckets_user_updated ON tree_usage_buckets(user_id, updated_at, device_id, bucket_id);
+CREATE INDEX IF NOT EXISTS idx_tree_usage_bucket_tombstones_user_deleted ON tree_usage_bucket_tombstones(user_id, deleted_at, device_id, bucket_id);
 CREATE INDEX IF NOT EXISTS idx_usage_preferences_user ON usage_preferences(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_totals_tokens ON usage_totals(tokens);
 CREATE INDEX IF NOT EXISTS idx_auth_codes_expires ON auth_codes(expires_at);
