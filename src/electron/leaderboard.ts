@@ -457,8 +457,9 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
       }
 
       const snapshot = options.cloudUsageSnapshot();
-      await syncCloudDeviceSnapshot(snapshot, state.syncProtocol !== 2);
-      const previousBucketSignatures = state.syncProtocol === 2 ? { ...(state.usageBucketSignatures ?? {}) } : {};
+      const replaceLegacyUsageBuckets = state.syncProtocol !== 2;
+      if (!replaceLegacyUsageBuckets) await syncCloudDeviceSnapshot(snapshot, false);
+      const previousBucketSignatures = { ...(state.usageBucketSignatures ?? {}) };
       const currentBucketSignatures = Object.fromEntries(
         snapshot.buckets.map((bucket) => [bucket.id, cloudUsageBucketSignature(bucket)]),
       );
@@ -501,6 +502,8 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         state = checkpointCloudBucketState(state, previousBucketSignatures);
         writeCloudSyncState(state);
       }
+
+      if (replaceLegacyUsageBuckets) await syncCloudDeviceSnapshot(snapshot, true);
 
       const syncedAchievementIds = new Set(syncOptions.force ? [] : state.syncedAchievementIds ?? []);
       const localAchievements = options.getAchievements().unlocked.filter((item) => !syncedAchievementIds.has(item.id));
@@ -1726,7 +1729,6 @@ function normalizeBucketSignatures(value: unknown) {
 function checkpointCloudBucketState(state: CloudSyncFile, signatures: Record<string, string>): CloudSyncFile {
   return {
     ...state,
-    syncProtocol: 2,
     usageBucketSignatures: { ...signatures },
   };
 }

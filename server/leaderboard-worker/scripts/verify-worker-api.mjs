@@ -163,6 +163,49 @@ FROM seq;
     "v2 transition should tombstone legacy compatibility buckets",
   );
 
+  const bulkUsageBuckets = Array.from({ length: 200 }, (_, index) => ({
+    id: `hour-v2-bulk-${String(index).padStart(3, "0")}`,
+    startedAt: new Date(Date.parse("2026-05-01T00:00:00.000Z") + index * 3_600_000).toISOString(),
+    source: "codex-session",
+    model: "bulk-model",
+    tokens: 100 + index,
+    inputTokens: 80 + index,
+    outputTokens: 20,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    eventCount: 1,
+  }));
+  await requestJson("/api/tree/events", {
+    method: "POST",
+    token: transitionToken,
+    body: {
+      deviceId: "bulk-device",
+      aggregationVersion: 2,
+      usageBuckets: bulkUsageBuckets,
+      appVersion: "0.8.3-test",
+    },
+  });
+  const bulkTree = await requestJson("/api/tree?protocol=2", { token: transitionToken });
+  assert(
+    bulkTree.entries?.filter((entry) => entry.deviceId === "bulk-device").length === 200,
+    "protocol v2 should accept a full 200-bucket upload",
+  );
+  await requestJson("/api/tree/events", {
+    method: "POST",
+    token: transitionToken,
+    body: {
+      deviceId: "bulk-device",
+      aggregationVersion: 2,
+      deletedUsageBucketIds: bulkUsageBuckets.map((bucket) => bucket.id),
+      appVersion: "0.8.3-test",
+    },
+  });
+  const bulkTreeAfterDelete = await requestJson("/api/tree?protocol=2", { token: transitionToken });
+  assert(
+    !bulkTreeAfterDelete.entries?.some((entry) => entry.deviceId === "bulk-device"),
+    "protocol v2 should delete a full 200-bucket batch",
+  );
+
   await requestJson("/api/tree/events", {
     method: "POST",
     body: {

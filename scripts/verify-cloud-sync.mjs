@@ -51,6 +51,8 @@ function createFakeCloud() {
   const requests = [];
   let leaderboardDeleteCount = 0;
   let deltaUnsupported = false;
+  let failUsageBucketUploadAt;
+  let usageBucketUploadCount = 0;
   let clock = Date.parse("2026-05-27T00:00:00.000Z");
 
   function nextTimestamp() {
@@ -160,6 +162,10 @@ function createFakeCloud() {
     if (url.pathname === "/api/tree/events" && method === "POST") {
       assert(options.token === "token", "tree event upload requires auth token");
       assert(typeof body?.deviceId === "string" && body.deviceId, "tree event upload requires device id");
+      if (Array.isArray(body?.usageBuckets)) {
+        usageBucketUploadCount += 1;
+        if (usageBucketUploadCount === failUsageBucketUploadAt) throw new Error("simulated bucket upload failure");
+      }
       const updatedAt = nextTimestamp();
       const previousDevice = devices.get(body.deviceId) ?? {};
       devices.set(body.deviceId, {
@@ -220,6 +226,13 @@ function createFakeCloud() {
       if (Array.isArray(body?.deletedUsageBucketIds)) {
         for (const bucketId of body.deletedUsageBucketIds) {
           const id = `cloud-bucket:${body.deviceId}:${bucketId}`;
+          events.delete(id);
+          tombstones.set(id, { id, updatedAt });
+        }
+      }
+      if (body?.replaceLegacyUsageBuckets === true) {
+        for (const [id, event] of events) {
+          if (event.deviceId !== body.deviceId || !id.startsWith(`cloud-bucket:${body.deviceId}:legacy-`)) continue;
           events.delete(id);
           tombstones.set(id, { id, updatedAt });
         }
@@ -291,6 +304,9 @@ function createFakeCloud() {
     insertRemoteEvent,
     setDeltaUnsupported(value) {
       deltaUnsupported = Boolean(value);
+    },
+    failUsageBucketUpload(number) {
+      failUsageBucketUploadAt = number;
     },
     get leaderboardDeleteCount() {
       return leaderboardDeleteCount;
@@ -690,6 +706,62 @@ const joinZeroTokenDevice = createDevice("join-zero-token", "join-zero-device", 
 status = await joinZeroTokenDevice.service.joinCloudTree();
 assert(!status.error, `joining a zero-token cloud tree should succeed: ${status.error}`);
 assert(joinZeroTokenDevice.ledger.settings.cloudSyncEnabled === true, "joining a zero-token cloud tree should enable cloud sync");
+
+const migrationCloud = createFakeCloud();
+const legacyMigrationBucketId = "cloud-bucket:migration-device:legacy-seed";
+migrationCloud.events.set(legacyMigrationBucketId, {
+  id: legacyMigrationBucketId,
+  createdAt: "2025-12-31T23:00:00.000Z",
+  source: "codex-session",
+  model: "legacy-model",
+  tokens: 500,
+  eventCount: 1,
+  deviceId: "migration-device",
+  updatedAt: "2026-05-27T00:00:00.000Z",
+});
+const migrationDevice = createDevice("migration", "migration-device", migrationCloud, {
+  entries: Array.from({ length: 201 }, (_, index) =>
+    localEntry(
+      `codex-session:migration-${index}`,
+      "migration-device",
+      "codex-session",
+      new Date(Date.parse("2026-01-01T00:00:00.000Z") + index * 3_600_000).toISOString(),
+      100 + index,
+    )),
+});
+migrationDevice.ledger.settings.cloudSyncEnabled = true;
+migrationDevice.ledger.settings.treeStartMode = "new";
+migrationCloud.failUsageBucketUpload(2);
+status = await migrationDevice.service.syncCloudTree({ force: true });
+assert(status.error === "simulated bucket upload failure", "migration test should fail on the second bucket upload");
+assert(
+  migrationCloud.events.has(legacyMigrationBucketId),
+  "a failed v2 migration must keep the legacy bucket until every new bucket is uploaded",
+);
+assert(
+  Object.keys(migrationDevice.files.get("migration:cloud")?.usageBucketSignatures ?? {}).length === 200,
+  "a failed v2 migration should checkpoint the first successful bucket chunk",
+);
+assert(
+  migrationDevice.files.get("migration:cloud")?.syncProtocol !== 2,
+  "a failed v2 migration must not mark protocol v2 complete",
+);
+const requestCountBeforeMigrationRetry = migrationCloud.requests.length;
+migrationCloud.failUsageBucketUpload(undefined);
+status = await migrationDevice.service.syncCloudTree();
+assert(!status.error, `migration retry failed: ${status.error}`);
+const migrationRetryUploads = migrationCloud.requests
+  .slice(requestCountBeforeMigrationRetry)
+  .filter((request) => Array.isArray(request.body?.usageBuckets));
+assert(
+  migrationRetryUploads.reduce((total, request) => total + request.body.usageBuckets.length, 0) === 1,
+  "a v2 migration retry should resume after the checkpoint instead of re-uploading completed buckets",
+);
+assert(
+  !migrationCloud.events.has(legacyMigrationBucketId),
+  "a successful v2 migration should remove the legacy bucket after the final upload",
+);
+migrationDevice.service.stop();
 
 const kimiCloud = createFakeCloud();
 const kimiDevice = createDevice("kimi-device", "kimi-device-id", kimiCloud, {

@@ -2956,31 +2956,42 @@ function normalizeDeletedUsageBucketStatements(
     .filter((value): value is string => Boolean(value)))]
     : [];
   if (!ids.length) return { count: 0, statements: [] as D1PreparedStatement[] };
-  const values = ids.map(() => "(?, ?, ?, ?)").join(", ");
-  const placeholders = ids.map(() => "?").join(", ");
+  const statements: D1PreparedStatement[] = [];
+  for (let index = 0; index < ids.length; index += 25) {
+    const chunk = ids.slice(index, index + 25);
+    const values = chunk.map(() => "(?, ?, ?, ?)").join(", ");
+    statements.push(env.DB.prepare(
+      `INSERT INTO tree_usage_bucket_tombstones (user_id, device_id, bucket_id, deleted_at)
+       VALUES ${values}
+       ON CONFLICT(user_id, device_id, bucket_id) DO UPDATE SET deleted_at = excluded.deleted_at`,
+    ).bind(...chunk.flatMap((id) => [userId, deviceId, id, now])));
+  }
+  for (let index = 0; index < ids.length; index += 98) {
+    const chunk = ids.slice(index, index + 98);
+    const placeholders = chunk.map(() => "?").join(", ");
+    statements.push(env.DB.prepare(
+      `DELETE FROM tree_usage_buckets
+       WHERE user_id = ? AND device_id = ? AND bucket_id IN (${placeholders})`,
+    ).bind(userId, deviceId, ...chunk));
+  }
   return {
     count: ids.length,
-    statements: [
-      env.DB.prepare(
-        `INSERT INTO tree_usage_bucket_tombstones (user_id, device_id, bucket_id, deleted_at)
-         VALUES ${values}
-         ON CONFLICT(user_id, device_id, bucket_id) DO UPDATE SET deleted_at = excluded.deleted_at`,
-      ).bind(...ids.flatMap((id) => [userId, deviceId, id, now])),
-      env.DB.prepare(
-        `DELETE FROM tree_usage_buckets
-         WHERE user_id = ? AND device_id = ? AND bucket_id IN (${placeholders})`,
-      ).bind(userId, deviceId, ...ids),
-    ],
+    statements,
   };
 }
 
 function clearUsageBucketTombstoneStatements(ids: string[], userId: string, deviceId: string, env: Env) {
   if (!ids.length) return [];
-  const placeholders = ids.map(() => "?").join(", ");
-  return [env.DB.prepare(
-    `DELETE FROM tree_usage_bucket_tombstones
-     WHERE user_id = ? AND device_id = ? AND bucket_id IN (${placeholders})`,
-  ).bind(userId, deviceId, ...ids)];
+  const statements: D1PreparedStatement[] = [];
+  for (let index = 0; index < ids.length; index += 98) {
+    const chunk = ids.slice(index, index + 98);
+    const placeholders = chunk.map(() => "?").join(", ");
+    statements.push(env.DB.prepare(
+      `DELETE FROM tree_usage_bucket_tombstones
+       WHERE user_id = ? AND device_id = ? AND bucket_id IN (${placeholders})`,
+    ).bind(userId, deviceId, ...chunk));
+  }
+  return statements;
 }
 
 function replaceLegacyUsageBucketStatements(userId: string, deviceId: string, now: string, env: Env) {
