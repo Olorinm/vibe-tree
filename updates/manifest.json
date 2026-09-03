@@ -2,6 +2,59 @@
   "schemaVersion": 1,
   "versions": [
     {
+      "version": "0.9.0",
+      "publishedAt": "2026-09-03",
+      "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.9.0",
+      "title": {
+        "zh-CN": "Vibe Tree v0.9.0",
+        "en-US": "Vibe Tree v0.9.0"
+      },
+      "summary": {
+        "zh-CN": "新增 DeepSeek Harness Token 统计，并让多设备同养小树的云同步更稳定、更节省服务端资源。",
+        "en-US": "Added DeepSeek Harness token tracking and made shared-tree cloud sync more reliable and resource-efficient."
+      },
+      "highlights": {
+        "zh-CN": [
+          "自动读取 DeepSeek Harness 的本地用量记录，并展示 Token、模型和来源统计。",
+          "多设备同养改为同步每小时聚合用量，只上传发生变化的部分。",
+          "网络或服务端暂时失败后可以安全续传，并会按退避时间重试。"
+        ],
+        "en-US": [
+          "Reads local DeepSeek Harness usage records and shows token, model, and source statistics.",
+          "Shared-tree sync now uploads hourly aggregates and only sends data that changed.",
+          "Interrupted syncs can resume safely and retry with backoff after network or server failures."
+        ]
+      },
+      "fixes": {
+        "zh-CN": [
+          "减少云同步中的重复读取、重复上传和无效重试，避免排行榜与同养小树服务在高用量时承受不必要的压力。",
+          "修复大量长期用量下，部分同步删除状态可能无法完整保留的问题。"
+        ],
+        "en-US": [
+          "Reduced repeated reads, uploads, and ineffective retries so leaderboard and shared-tree services avoid unnecessary load under heavy usage.",
+          "Fixed some deletion state not being retained after very large long-running sync histories."
+        ]
+      },
+      "privacy": {
+        "zh-CN": [
+          "DeepSeek Harness 会话记录只在本机读取，不会上传提示词、回复、代码文件、本地路径或会话正文。",
+          "多设备同养只同步按设备、来源和模型聚合的每小时 Token 用量，不上传单条会话事件。"
+        ],
+        "en-US": [
+          "DeepSeek Harness sessions are read locally; prompts, replies, code files, local paths, and session text are not uploaded.",
+          "Shared-tree sync uploads hourly token aggregates grouped by device, source, and model rather than individual session events."
+        ]
+      },
+      "upgradeNotes": {
+        "zh-CN": [
+          "覆盖升级会保留现有本机数据，不需要清空或重新加入排行榜。"
+        ],
+        "en-US": [
+          "Updating in place keeps existing local data; there is no need to reset the app or rejoin the leaderboard."
+        ]
+      }
+    },
+    {
       "version": "0.8.2",
       "publishedAt": "2026-07-15",
       "fullReleaseUrl": "https://github.com/open-grove/vibe-tree/releases/tag/v0.8.2",

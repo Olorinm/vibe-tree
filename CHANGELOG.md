@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+## 2026-09-03 (v0.9.0)
+
 - Added DeepSeek Harness token tracking from append-only `session.jsonl` and concatenated `session.jsonl.zstd` files, with incremental scanning, restart-safe deduplication, source settings, and cloud-sync source preservation.
+- Replaced per-event shared-tree uploads with hourly usage buckets grouped by device, source, and model, reducing repeated cloud reads and writes while preserving local event history.
+- Added resumable bucket migration, paginated delta sync, quota-aware retry backoff, and durable replacement of legacy cloud mirrors.
+- Fixed manual sync resending unchanged buckets and large sync checkpoints dropping deletion signatures.
 
 ## 2026-07-15 (v0.8.2)
 
