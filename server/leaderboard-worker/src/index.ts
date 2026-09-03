@@ -37,6 +37,9 @@ const LEADERBOARD_CACHE_TTL_MS = 60_000;
 const SYNC_COOLDOWN_SECONDS = 30;
 const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
 const CLOUD_TREE_PAGE_SIZE = 1_000;
+const D1_MAX_BOUND_PARAMETERS = 100;
+const USAGE_BUCKET_TOMBSTONES_PER_INSERT = Math.floor(D1_MAX_BOUND_PARAMETERS / 4);
+const USAGE_BUCKET_IDS_PER_SCOPED_DELETE = D1_MAX_BOUND_PARAMETERS - 2;
 const LEADERBOARD_RANGES: LeaderboardRange[] = ["24h", "7d", "30d", "all"];
 const leaderboardCache = new Map<LeaderboardRange, { expiresAt: number; updatedAt: string; entries: LeaderboardEntry[] }>();
 interface SocialProfilePrivacy {
@@ -2957,8 +2960,8 @@ function normalizeDeletedUsageBucketStatements(
     : [];
   if (!ids.length) return { count: 0, statements: [] as D1PreparedStatement[] };
   const statements: D1PreparedStatement[] = [];
-  for (let index = 0; index < ids.length; index += 25) {
-    const chunk = ids.slice(index, index + 25);
+  for (let index = 0; index < ids.length; index += USAGE_BUCKET_TOMBSTONES_PER_INSERT) {
+    const chunk = ids.slice(index, index + USAGE_BUCKET_TOMBSTONES_PER_INSERT);
     const values = chunk.map(() => "(?, ?, ?, ?)").join(", ");
     statements.push(env.DB.prepare(
       `INSERT INTO tree_usage_bucket_tombstones (user_id, device_id, bucket_id, deleted_at)
@@ -2966,8 +2969,8 @@ function normalizeDeletedUsageBucketStatements(
        ON CONFLICT(user_id, device_id, bucket_id) DO UPDATE SET deleted_at = excluded.deleted_at`,
     ).bind(...chunk.flatMap((id) => [userId, deviceId, id, now])));
   }
-  for (let index = 0; index < ids.length; index += 98) {
-    const chunk = ids.slice(index, index + 98);
+  for (let index = 0; index < ids.length; index += USAGE_BUCKET_IDS_PER_SCOPED_DELETE) {
+    const chunk = ids.slice(index, index + USAGE_BUCKET_IDS_PER_SCOPED_DELETE);
     const placeholders = chunk.map(() => "?").join(", ");
     statements.push(env.DB.prepare(
       `DELETE FROM tree_usage_buckets
@@ -2983,8 +2986,8 @@ function normalizeDeletedUsageBucketStatements(
 function clearUsageBucketTombstoneStatements(ids: string[], userId: string, deviceId: string, env: Env) {
   if (!ids.length) return [];
   const statements: D1PreparedStatement[] = [];
-  for (let index = 0; index < ids.length; index += 98) {
-    const chunk = ids.slice(index, index + 98);
+  for (let index = 0; index < ids.length; index += USAGE_BUCKET_IDS_PER_SCOPED_DELETE) {
+    const chunk = ids.slice(index, index + USAGE_BUCKET_IDS_PER_SCOPED_DELETE);
     const placeholders = chunk.map(() => "?").join(", ");
     statements.push(env.DB.prepare(
       `DELETE FROM tree_usage_bucket_tombstones

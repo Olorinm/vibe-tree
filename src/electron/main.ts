@@ -2297,7 +2297,7 @@ function appendRemoteEntries(entries: LedgerEntry[], deletedEntryIds: string[] =
   const deduped = dedupeCloudMirroredEntries([...accepted, ...repaired, ...kept]);
   ledger.entries = deduped.entries;
   resetLedgerEntryIds();
-  if (repaired.length || deduped.removedCount) rewriteUsageEntriesStore(ledger.entries);
+  if (repaired.length || removedBeforeMerge || deduped.removedCount) rewriteUsageEntriesStore(ledger.entries);
   broadcastLedgerNow();
   return accepted.length + repaired.length + removedBeforeMerge + deduped.removedCount;
 }

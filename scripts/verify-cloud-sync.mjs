@@ -408,6 +408,7 @@ function createDevice(
     apiUrl: "https://fake-cloud.local",
     appName: "Vibe Tree",
     syncIntervalMs: 86_400_000,
+    cloudSyncIntervalMs: 86_400_000,
     authTimeoutMs: 1_000,
     callbackPath: "/leaderboard/auth/callback",
     authPath: () => `${name}:auth`,
@@ -730,10 +731,18 @@ const migrationDevice = createDevice("migration", "migration-device", migrationC
     )),
 });
 migrationDevice.ledger.settings.cloudSyncEnabled = true;
+migrationDevice.ledger.settings.cloudSyncAutoSyncEnabled = true;
 migrationDevice.ledger.settings.treeStartMode = "new";
 migrationCloud.failUsageBucketUpload(2);
 status = await migrationDevice.service.syncCloudTree({ force: true });
 assert(status.error === "simulated bucket upload failure", "migration test should fail on the second bucket upload");
+const requestCountAfterMigrationFailure = migrationCloud.requests.length;
+migrationDevice.service.scheduleCloudSyncSoon(0);
+await new Promise((resolve) => setTimeout(resolve, 50));
+assert(
+  migrationCloud.requests.length === requestCountAfterMigrationFailure,
+  "new usage must not pull a failed cloud sync forward ahead of its retry backoff",
+);
 assert(
   migrationCloud.events.has(legacyMigrationBucketId),
   "a failed v2 migration must keep the legacy bucket until every new bucket is uploaded",
@@ -762,6 +771,29 @@ assert(
   "a successful v2 migration should remove the legacy bucket after the final upload",
 );
 migrationDevice.service.stop();
+
+const signatureLimitCloud = createFakeCloud();
+const signatureLimitDevice = createDevice("signature-limit", "signature-limit-device", signatureLimitCloud);
+signatureLimitDevice.ledger.settings.cloudSyncEnabled = true;
+signatureLimitDevice.ledger.settings.treeStartMode = "new";
+signatureLimitDevice.files.set("signature-limit:cloud", {
+  syncProtocol: 2,
+  usageBucketSignatures: Object.fromEntries(
+    Array.from({ length: 20_001 }, (_, index) => [
+      `hour-v2-${index.toString(16).padStart(32, "0")}`,
+      (index + 1).toString(16).padStart(64, "0"),
+    ]),
+  ),
+});
+status = await signatureLimitDevice.service.syncCloudTree();
+assert(!status.error, `large signature state sync failed: ${status.error}`);
+assert(
+  signatureLimitCloud.requests
+    .flatMap((request) => request.body?.deletedUsageBucketIds ?? [])
+    .length === 20_001,
+  "cloud sync should retain every valid bucket signature needed to propagate deletions",
+);
+signatureLimitDevice.service.stop();
 
 const kimiCloud = createFakeCloud();
 const kimiDevice = createDevice("kimi-device", "kimi-device-id", kimiCloud, {
@@ -872,6 +904,14 @@ assert(
     (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.usageBuckets),
   ).length === bucketUploadCountAfterSeed,
   "repeat cloud sync should not resend unchanged aggregate usage buckets",
+);
+status = await modelStatsCacheDevice.service.syncCloudTree({ force: true });
+assert(!status.error, `manual cloud sync failed: ${status.error}`);
+assert(
+  modelStatsCacheCloud.requests.filter(
+    (request) => request.path === "/api/tree/events" && Array.isArray(request.body?.usageBuckets),
+  ).length === bucketUploadCountAfterSeed,
+  "manual cloud sync should not resend unchanged aggregate usage buckets",
 );
 modelStatsCacheDevice.ledger.entries.unshift(
   localEntry("model-cache-2", "model-cache-device", "codex-session", "2026-05-27T02:20:00.000Z", 100),

@@ -145,6 +145,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
   let cancelPendingAuth: ((message?: string) => boolean) | null = null;
   let lastSyncAttemptAt: string | undefined;
   let cloudSyncFailureCount = 0;
+  let cloudSyncRetryNotBefore = 0;
 
   const CLOUD_CHANGE_SYNC_DELAY_MS = 60_000;
   const CLOUD_BUCKET_UPLOAD_SIZE = 200;
@@ -201,6 +202,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
     syncTimer = null;
     cloudSyncTimer = null;
     cloudSyncTimerDueAt = undefined;
+    cloudSyncRetryNotBefore = 0;
     cancelPendingAuth?.(text("leaderboardLoginCancelled"));
     authServer?.close();
     authServer = null;
@@ -229,8 +231,13 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
 
   function scheduleCloudSyncSoon(delayMs = CLOUD_CHANGE_SYNC_DELAY_MS) {
     if (!configured || !auth.token || !ledger().settings.cloudSyncEnabled || !ledger().settings.cloudSyncAutoSyncEnabled) return;
-    const dueAt = Date.now() + Math.max(0, delayMs);
-    if (cloudSyncTimer && cloudSyncTimerDueAt !== undefined && cloudSyncTimerDueAt <= dueAt) return;
+    const dueAt = Math.max(Date.now() + Math.max(0, delayMs), cloudSyncRetryNotBefore);
+    if (
+      cloudSyncTimer &&
+      cloudSyncTimerDueAt !== undefined &&
+      cloudSyncTimerDueAt <= dueAt &&
+      cloudSyncTimerDueAt >= cloudSyncRetryNotBefore
+    ) return;
     if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
     cloudSyncTimerDueAt = dueAt;
     cloudSyncTimer = setTimeout(() => {
@@ -464,7 +471,7 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         snapshot.buckets.map((bucket) => [bucket.id, cloudUsageBucketSignature(bucket)]),
       );
       const changedBuckets = snapshot.buckets.filter(
-        (bucket) => syncOptions.force === true || previousBucketSignatures[bucket.id] !== currentBucketSignatures[bucket.id],
+        (bucket) => previousBucketSignatures[bucket.id] !== currentBucketSignatures[bucket.id],
       );
       const deletedBucketIds = Object.keys(previousBucketSignatures).filter((id) => !(id in currentBucketSignatures));
 
@@ -551,13 +558,16 @@ export function createLeaderboardService(options: LeaderboardServiceOptions) {
         cloudSyncLastPulledAt: now().toISOString(),
       });
       cloudSyncFailureCount = 0;
+      cloudSyncRetryNotBefore = 0;
       cloudSyncing = false;
       scheduleCloudSyncSoon(nextCloudSyncDelay());
       return cloudStatus();
     } catch (error) {
       cloudSyncing = false;
       cloudSyncFailureCount += 1;
-      if (!syncOptions.requireRemote) scheduleCloudSyncSoon(cloudSyncRetryDelay(error, cloudSyncFailureCount));
+      const retryDelay = cloudSyncRetryDelay(error, cloudSyncFailureCount);
+      cloudSyncRetryNotBefore = Date.now() + retryDelay;
+      if (!syncOptions.requireRemote) scheduleCloudSyncSoon(retryDelay);
       return cloudStatus(error instanceof Error ? error.message : text("leaderboardSyncFailed"));
     }
   }
@@ -1718,7 +1728,7 @@ function cloudUsageBucketSignature(bucket: CloudUsageBucket) {
 function normalizeBucketSignatures(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const signatures: Record<string, string> = {};
-  for (const [id, signature] of Object.entries(value as Record<string, unknown>).slice(0, 20_000)) {
+  for (const [id, signature] of Object.entries(value as Record<string, unknown>)) {
     if (!/^hour-v2-[a-f0-9]{32}$/.test(id)) continue;
     if (typeof signature !== "string" || !/^[a-f0-9]{64}$/.test(signature)) continue;
     signatures[id] = signature;
